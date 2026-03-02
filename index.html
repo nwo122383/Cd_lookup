@@ -25,12 +25,19 @@
           <div class="row">
             <button id="btnStartScan" class="primary">Scan</button>
             <button id="btnStopScan" class="ghost" disabled>Stop</button>
+            <button id="btnTorch" class="ghost" disabled>Torch</button>
+          </div>
+
+          <div class="row">
+            <button id="btnZoomOut" class="ghost" disabled>−</button>
+            <div class="small" id="zoomLabel" style="flex:1; text-align:center;">Zoom: —</div>
+            <button id="btnZoomIn" class="ghost" disabled>+</button>
           </div>
 
           <div class="videoWrap">
             <video id="video" playsinline muted></video>
             <div class="overlay" id="scanOverlay">
-              Point at barcode
+              Hold steady • fill the frame
             </div>
           </div>
 
@@ -88,7 +95,7 @@
 
       <footer>
         <div class="hint">
-          ✅ owned · ❌ not owned · tap Library to browse
+          Tip: bright light + steady + barcode fills frame
         </div>
       </footer>
     </div>
