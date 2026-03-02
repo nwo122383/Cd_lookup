@@ -4,13 +4,11 @@ const UI = {
   statusPill: document.getElementById("statusPill"),
   btnStartScan: document.getElementById("btnStartScan"),
   btnStopScan: document.getElementById("btnStopScan"),
-  btnTorch: document.getElementById("btnTorch"),
-  btnZoomIn: document.getElementById("btnZoomIn"),
-  btnZoomOut: document.getElementById("btnZoomOut"),
-  zoomLabel: document.getElementById("zoomLabel"),
+  btnSnap: document.getElementById("btnSnap"),
 
   video: document.getElementById("video"),
   scanOverlay: document.getElementById("scanOverlay"),
+  snapCanvas: document.getElementById("snapCanvas"),
 
   manualBarcode: document.getElementById("manualBarcode"),
   btnLookup: document.getElementById("btnLookup"),
@@ -35,22 +33,18 @@ const UI = {
 };
 
 const STORAGE_KEY = "cd_catalog_v1";
-const MB_APP_UA = "r1-cd-catalog/0.2 (standalone)";
+const MB_APP_UA = "r1-cd-catalog/0.3 (snap-decode)";
 
 let state = {
-  catalogByBarcode: {}, // barcode -> item
+  catalogByBarcode: {},
   lastScan: null,
 };
 
-let scanner = null;
-let scannerActive = false;
-
-// Track-level controls
 let mediaStream = null;
-let activeTrack = null;
-let torchOn = false;
-let zoomCaps = null; // {min,max,step,current}
-let lastDecodeAt = 0;
+let videoTrack = null;
+
+// ZXing: use reader + restrict formats (faster)
+let reader = null;
 
 const Storage = {
   async getItem(key) {
@@ -95,31 +89,10 @@ function setHaveBadge(kind) {
 }
 
 function normalizeBarcode(raw) {
-  return String(raw || "").replace(/[^0-9]/g, "").trim();
-}
-
-function pickBestRelease(releases) {
-  if (!Array.isArray(releases) || releases.length === 0) return null;
-
-  const scored = releases.map((r) => {
-    const score = Number(r.score || 0);
-    const statusBoost = r.status === "Official" ? 15 : 0;
-    const dateBoost = r.date ? 2 : 0;
-    return { r, rank: score + statusBoost + dateBoost };
-  });
-
-  scored.sort((a, b) => b.rank - a.rank);
-  return scored[0].r;
-}
-
-function extractArtist(release) {
-  if (Array.isArray(release["artist-credit"]) && release["artist-credit"].length > 0) {
-    return release["artist-credit"]
-      .map((ac) => ac.name || ac.artist?.name)
-      .filter(Boolean)
-      .join("");
-  }
-  return "Unknown Artist";
+  const code = String(raw || "").replace(/[^0-9]/g, "").trim();
+  // Normalize UPC-A encoded as EAN-13 leading 0
+  if (code.length === 13 && code.startsWith("0")) return code.slice(1);
+  return code;
 }
 
 function uiSetMeta(item) {
@@ -166,7 +139,6 @@ function escapeHtml(str) {
 
 function renderLibrary() {
   const items = Object.values(state.catalogByBarcode);
-
   items.sort((a, b) => {
     const aa = (a.artist || "").toLowerCase();
     const ba = (b.artist || "").toLowerCase();
@@ -200,83 +172,23 @@ function showLibrary(show) {
   if (show) renderLibrary();
 }
 
-/**
- * Camera “enhancements”:
- * - request higher resolution
- * - attempt continuous focus (supported on some devices)
- * - attempt torch + zoom via applyConstraints
- */
-async function initTrackControls(stream) {
-  mediaStream = stream;
-  activeTrack = stream.getVideoTracks()[0] || null;
-  torchOn = false;
-  zoomCaps = null;
-
-  UI.btnTorch.disabled = true;
-  UI.btnZoomIn.disabled = true;
-  UI.btnZoomOut.disabled = true;
-  UI.zoomLabel.textContent = "Zoom: —";
-
-  if (!activeTrack) return;
-
-  const caps = activeTrack.getCapabilities ? activeTrack.getCapabilities() : null;
-  const settings = activeTrack.getSettings ? activeTrack.getSettings() : null;
-
-  // Torch support
-  if (caps && typeof caps.torch !== "undefined") {
-    UI.btnTorch.disabled = false;
-  }
-
-  // Zoom support
-  if (caps && caps.zoom) {
-    const min = caps.zoom.min ?? 1;
-    const max = caps.zoom.max ?? 1;
-    const step = caps.zoom.step ?? 0.1;
-    const current = settings?.zoom ?? min;
-    zoomCaps = { min, max, step, current };
-    UI.btnZoomIn.disabled = false;
-    UI.btnZoomOut.disabled = false;
-    UI.zoomLabel.textContent = `Zoom: ${current.toFixed(1)}x`;
-  }
-
-  // Try to set continuous focus if supported
-  try {
-    if (caps && caps.focusMode && Array.isArray(caps.focusMode) && caps.focusMode.includes("continuous")) {
-      await activeTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
-    }
-  } catch (_) {
-    // ignore
-  }
+function pickBestRelease(releases) {
+  if (!Array.isArray(releases) || releases.length === 0) return null;
+  const scored = releases.map((r) => {
+    const score = Number(r.score || 0);
+    const statusBoost = r.status === "Official" ? 15 : 0;
+    const dateBoost = r.date ? 2 : 0;
+    return { r, rank: score + statusBoost + dateBoost };
+  });
+  scored.sort((a, b) => b.rank - a.rank);
+  return scored[0].r;
 }
 
-async function setTorch(enabled) {
-  if (!activeTrack) return;
-  try {
-    await activeTrack.applyConstraints({ advanced: [{ torch: !!enabled }] });
-    torchOn = !!enabled;
-    UI.btnTorch.textContent = torchOn ? "Torch On" : "Torch";
-  } catch (e) {
-    // Some devices report torch but fail applyConstraints
-    console.error(e);
-    setStatus("Torch not supported", "warn");
-    UI.btnTorch.disabled = true;
+function extractArtist(release) {
+  if (Array.isArray(release["artist-credit"]) && release["artist-credit"].length > 0) {
+    return release["artist-credit"].map((ac) => ac.name || ac.artist?.name).filter(Boolean).join("");
   }
-}
-
-async function setZoom(newZoom) {
-  if (!activeTrack || !zoomCaps) return;
-  const z = Math.min(zoomCaps.max, Math.max(zoomCaps.min, newZoom));
-  try {
-    await activeTrack.applyConstraints({ advanced: [{ zoom: z }] });
-    zoomCaps.current = z;
-    UI.zoomLabel.textContent = `Zoom: ${z.toFixed(1)}x`;
-  } catch (e) {
-    console.error(e);
-    setStatus("Zoom not supported", "warn");
-    UI.btnZoomIn.disabled = true;
-    UI.btnZoomOut.disabled = true;
-    UI.zoomLabel.textContent = "Zoom: —";
-  }
+  return "Unknown Artist";
 }
 
 async function lookupBarcode(barcode) {
@@ -297,15 +209,13 @@ async function lookupBarcode(barcode) {
   }
 
   setStatus("Looking up…", "normal");
-  UI.scanOverlay.style.display = "none";
-
   const url =
     "https://musicbrainz.org/ws/2/release/?fmt=json&limit=10&query=" +
     encodeURIComponent(`barcode:${barcode}`);
 
   try {
     const res = await fetch(url, {
-      headers: { "Accept": "application/json", "User-Agent": MB_APP_UA },
+      headers: { Accept: "application/json", "User-Agent": MB_APP_UA },
     });
     if (!res.ok) throw new Error(`MusicBrainz HTTP ${res.status}`);
 
@@ -343,121 +253,106 @@ async function lookupBarcode(barcode) {
   }
 }
 
-async function startScan() {
-  if (scannerActive) return;
-  if (!window.ZXingBrowser) {
-    setStatus("Scanner lib missing", "bad");
-    return;
-  }
+async function openCamera() {
+  // Minimal constraints for max compatibility
+  const constraints = { video: true, audio: false };
 
-  scannerActive = true;
-  UI.btnStartScan.disabled = true;
-  UI.btnStopScan.disabled = false;
-  UI.scanOverlay.style.display = "flex";
+  // Stop any previous stream
+  stopCamera();
+
   setStatus("Opening camera…", "normal");
+  UI.scanOverlay.style.display = "flex";
+  UI.scanOverlay.textContent = "Fill frame with barcode • tap Snap";
 
   try {
-    // Restrict formats: makes decoding faster and more stable on weak cameras.
-    const hints = new Map();
-    hints.set(
-      ZXingBrowser.DecodeHintType.POSSIBLE_FORMATS,
-      [
-        ZXingBrowser.BarcodeFormat.EAN_13,
-        ZXingBrowser.BarcodeFormat.UPC_A,
-        ZXingBrowser.BarcodeFormat.EAN_8,
-      ]
-    );
-    // Try-harder can help at the cost of CPU (ok for tiny preview)
-    hints.set(ZXingBrowser.DecodeHintType.TRY_HARDER, true);
+    mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    UI.video.srcObject = mediaStream;
+    await UI.video.play();
 
-    scanner = new ZXingBrowser.BrowserMultiFormatReader(hints);
+    videoTrack = mediaStream.getVideoTracks()[0] || null;
 
-    // Aggressive constraints: ask for more pixels + prefer back camera.
-    // Some devices ignore this, but it helps when supported.
-    const constraints = {
-      audio: false,
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        // Some browsers accept focusMode here; others only via applyConstraints
-        // focusMode: "continuous"
-      },
-    };
+    UI.btnStartScan.disabled = true;
+    UI.btnStopScan.disabled = false;
+    UI.btnSnap.disabled = false;
 
-    await scanner.decodeFromConstraints(constraints, UI.video, async (result, err) => {
-      // Throttle decodes a bit so we don't hammer the CPU
-      const now = Date.now();
-      if (now - lastDecodeAt < 150) return;
-
-      if (result) {
-        lastDecodeAt = now;
-        const text = result.getText ? result.getText() : String(result);
-        const code = normalizeBarcode(text);
-
-        // Many UPC-A barcodes can be returned as EAN-13 with leading 0
-        const normalized = code.length === 13 && code.startsWith("0") ? code.slice(1) : code;
-
-        if (normalized && normalized.length >= 8) {
-          stopScan();
-          UI.manualBarcode.value = normalized;
-          lookupBarcode(normalized);
-        }
-      }
-    });
-
-    // After stream is attached, grab the underlying MediaStream from the video element
-    // (ZXing sets video.srcObject internally)
-    const stream = UI.video.srcObject;
-    if (stream && stream.getVideoTracks && stream.getVideoTracks().length) {
-      await initTrackControls(stream);
-    }
-
-    setStatus("Scanning…", "normal");
+    setStatus("Camera ready", "ok");
   } catch (e) {
     console.error(e);
     setStatus("Camera blocked", "bad");
-    UI.scanOverlay.style.display = "none";
     UI.btnStartScan.disabled = false;
     UI.btnStopScan.disabled = true;
-    scannerActive = false;
+    UI.btnSnap.disabled = true;
   }
 }
 
-function stopScan() {
-  if (!scannerActive) return;
-
-  try { scanner?.reset?.(); } catch (_) {}
-  scanner = null;
-  scannerActive = false;
-
+function stopCamera() {
   try {
     if (mediaStream && mediaStream.getTracks) {
       mediaStream.getTracks().forEach((t) => t.stop());
     }
   } catch (_) {}
 
+  mediaStream = null;
+  videoTrack = null;
+
   try {
-    const stream = UI.video.srcObject;
-    if (stream && stream.getTracks) stream.getTracks().forEach((t) => t.stop());
+    UI.video.pause();
     UI.video.srcObject = null;
   } catch (_) {}
 
-  mediaStream = null;
-  activeTrack = null;
-  torchOn = false;
-  zoomCaps = null;
-
-  UI.btnTorch.disabled = true;
-  UI.btnZoomIn.disabled = true;
-  UI.btnZoomOut.disabled = true;
-  UI.zoomLabel.textContent = "Zoom: —";
-  UI.btnTorch.textContent = "Torch";
-
   UI.btnStartScan.disabled = false;
   UI.btnStopScan.disabled = true;
-  UI.scanOverlay.style.display = "none";
-  setStatus("Ready", "normal");
+  UI.btnSnap.disabled = true;
+}
+
+async function snapAndDecode() {
+  if (!mediaStream) {
+    setStatus("Open camera first", "warn");
+    return;
+  }
+
+  // Draw current frame to canvas
+  const canvas = UI.snapCanvas;
+  const ctx = canvas.getContext("2d");
+
+  const vw = UI.video.videoWidth || 640;
+  const vh = UI.video.videoHeight || 480;
+
+  // Use actual video dimensions for max detail
+  canvas.width = vw;
+  canvas.height = vh;
+
+  ctx.drawImage(UI.video, 0, 0, vw, vh);
+
+  setStatus("Decoding…", "normal");
+
+  try {
+    if (!reader) {
+      const hints = new Map();
+      hints.set(
+        ZXingBrowser.DecodeHintType.POSSIBLE_FORMATS,
+        [ZXingBrowser.BarcodeFormat.EAN_13, ZXingBrowser.BarcodeFormat.UPC_A, ZXingBrowser.BarcodeFormat.EAN_8]
+      );
+      hints.set(ZXingBrowser.DecodeHintType.TRY_HARDER, true);
+      reader = new ZXingBrowser.BrowserMultiFormatReader(hints);
+    }
+
+    const result = await reader.decodeFromCanvas(canvas);
+    const text = result.getText ? result.getText() : String(result);
+    const code = normalizeBarcode(text);
+
+    if (!code) {
+      setStatus("No barcode found", "warn");
+      return;
+    }
+
+    UI.manualBarcode.value = code;
+    setStatus("Scanned!", "ok");
+    await lookupBarcode(code);
+  } catch (e) {
+    // decodeFromCanvas throws when not found
+    setStatus("No barcode found", "warn");
+  }
 }
 
 async function addLastScan() {
@@ -506,22 +401,12 @@ async function importJsonFile(file) {
 }
 
 function wireUI() {
-  UI.btnStartScan.addEventListener("click", startScan);
-  UI.btnStopScan.addEventListener("click", stopScan);
-
-  UI.btnTorch.addEventListener("click", async () => {
-    await setTorch(!torchOn);
+  UI.btnStartScan.addEventListener("click", openCamera);
+  UI.btnStopScan.addEventListener("click", () => {
+    stopCamera();
+    setStatus("Ready", "normal");
   });
-
-  UI.btnZoomIn.addEventListener("click", async () => {
-    if (!zoomCaps) return;
-    await setZoom(zoomCaps.current + zoomCaps.step);
-  });
-
-  UI.btnZoomOut.addEventListener("click", async () => {
-    if (!zoomCaps) return;
-    await setZoom(zoomCaps.current - zoomCaps.step);
-  });
+  UI.btnSnap.addEventListener("click", snapAndDecode);
 
   UI.btnLookup.addEventListener("click", () => lookupBarcode(UI.manualBarcode.value));
   UI.manualBarcode.addEventListener("keydown", (e) => {
