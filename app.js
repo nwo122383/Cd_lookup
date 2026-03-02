@@ -4,6 +4,11 @@ const UI = {
   statusPill: document.getElementById("statusPill"),
   btnStartScan: document.getElementById("btnStartScan"),
   btnStopScan: document.getElementById("btnStopScan"),
+  btnTorch: document.getElementById("btnTorch"),
+  btnZoomIn: document.getElementById("btnZoomIn"),
+  btnZoomOut: document.getElementById("btnZoomOut"),
+  zoomLabel: document.getElementById("zoomLabel"),
+
   video: document.getElementById("video"),
   scanOverlay: document.getElementById("scanOverlay"),
 
@@ -30,21 +35,23 @@ const UI = {
 };
 
 const STORAGE_KEY = "cd_catalog_v1";
-const MB_APP_UA = "r1-cd-catalog/0.1 (standalone)";
+const MB_APP_UA = "r1-cd-catalog/0.2 (standalone)";
 
 let state = {
   catalogByBarcode: {}, // barcode -> item
-  lastScan: null,       // { barcode, title, artist, date, mbid, source }
+  lastScan: null,
 };
 
 let scanner = null;
 let scannerActive = false;
 
-/**
- * Storage abstraction:
- * - Prefer r1 creationStorage if available
- * - Fallback to localStorage for normal browsers
- */
+// Track-level controls
+let mediaStream = null;
+let activeTrack = null;
+let torchOn = false;
+let zoomCaps = null; // {min,max,step,current}
+let lastDecodeAt = 0;
+
 const Storage = {
   async getItem(key) {
     try {
@@ -67,7 +74,6 @@ const Storage = {
 
 function setStatus(text, tone = "normal") {
   UI.statusPill.textContent = text;
-  UI.statusPill.style.borderColor = "rgba(255,255,255,0.10)";
   UI.statusPill.style.background = "rgba(255,255,255,0.10)";
   if (tone === "ok") UI.statusPill.style.background = "rgba(34,197,94,0.22)";
   if (tone === "bad") UI.statusPill.style.background = "rgba(239,68,68,0.20)";
@@ -75,7 +81,6 @@ function setStatus(text, tone = "normal") {
 }
 
 function setHaveBadge(kind) {
-  // kind: "have" | "dont" | "unknown"
   UI.haveBadge.className = "badge";
   if (kind === "have") {
     UI.haveBadge.textContent = "✅";
@@ -90,36 +95,31 @@ function setHaveBadge(kind) {
 }
 
 function normalizeBarcode(raw) {
-  if (!raw) return "";
-  return String(raw).replace(/[^0-9]/g, "").trim();
+  return String(raw || "").replace(/[^0-9]/g, "").trim();
 }
 
 function pickBestRelease(releases) {
   if (!Array.isArray(releases) || releases.length === 0) return null;
 
-  // Prefer CD releases, official status, higher score.
-  // MusicBrainz search includes ext:score-like `score`.
-  const scored = releases.map(r => {
+  const scored = releases.map((r) => {
     const score = Number(r.score || 0);
-    const statusBoost = (r.status === "Official") ? 15 : 0;
-    const formatBoost = (r["medium-list"] || r.media || []).some(m => (m.format || "").toLowerCase().includes("cd")) ? 10 : 0;
-    const countryBoost = r.country ? 2 : 0;
+    const statusBoost = r.status === "Official" ? 15 : 0;
     const dateBoost = r.date ? 2 : 0;
-    return { r, rank: score + statusBoost + formatBoost + countryBoost + dateBoost };
+    return { r, rank: score + statusBoost + dateBoost };
   });
 
-  scored.sort((a,b) => b.rank - a.rank);
+  scored.sort((a, b) => b.rank - a.rank);
   return scored[0].r;
 }
 
 function extractArtist(release) {
-  // MusicBrainz release search includes artist-credit array
   if (Array.isArray(release["artist-credit"]) && release["artist-credit"].length > 0) {
-    // join credited names
-    return release["artist-credit"].map(ac => ac.name || ac.artist?.name).filter(Boolean).join("");
+    return release["artist-credit"]
+      .map((ac) => ac.name || ac.artist?.name)
+      .filter(Boolean)
+      .join("");
   }
-  // fallback fields sometimes present
-  return release.artist || release.artistname || "Unknown Artist";
+  return "Unknown Artist";
 }
 
 function uiSetMeta(item) {
@@ -143,8 +143,7 @@ function updateActionsForBarcode(barcode) {
 }
 
 async function saveState() {
-  const payload = JSON.stringify(state);
-  await Storage.setItem(STORAGE_KEY, payload);
+  await Storage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
 async function loadState() {
@@ -156,18 +155,24 @@ async function loadState() {
   } catch (_) {}
 }
 
+function escapeHtml(str) {
+  return String(str)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function renderLibrary() {
   const items = Object.values(state.catalogByBarcode);
 
-  // Sort by artist then title
-  items.sort((a,b) => {
+  items.sort((a, b) => {
     const aa = (a.artist || "").toLowerCase();
     const ba = (b.artist || "").toLowerCase();
     if (aa < ba) return -1;
     if (aa > ba) return 1;
-    const at = (a.title || "").toLowerCase();
-    const bt = (b.title || "").toLowerCase();
-    return at.localeCompare(bt);
+    return (a.title || "").toLowerCase().localeCompare((b.title || "").toLowerCase());
   });
 
   UI.libraryCount.textContent = `${items.length} items`;
@@ -188,13 +193,90 @@ function renderLibrary() {
   }
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
+function showLibrary(show) {
+  UI.libraryView.style.display = show ? "block" : "none";
+  UI.btnBack.style.display = show ? "inline-flex" : "none";
+  UI.btnLibrary.style.display = show ? "none" : "inline-flex";
+  if (show) renderLibrary();
+}
+
+/**
+ * Camera “enhancements”:
+ * - request higher resolution
+ * - attempt continuous focus (supported on some devices)
+ * - attempt torch + zoom via applyConstraints
+ */
+async function initTrackControls(stream) {
+  mediaStream = stream;
+  activeTrack = stream.getVideoTracks()[0] || null;
+  torchOn = false;
+  zoomCaps = null;
+
+  UI.btnTorch.disabled = true;
+  UI.btnZoomIn.disabled = true;
+  UI.btnZoomOut.disabled = true;
+  UI.zoomLabel.textContent = "Zoom: —";
+
+  if (!activeTrack) return;
+
+  const caps = activeTrack.getCapabilities ? activeTrack.getCapabilities() : null;
+  const settings = activeTrack.getSettings ? activeTrack.getSettings() : null;
+
+  // Torch support
+  if (caps && typeof caps.torch !== "undefined") {
+    UI.btnTorch.disabled = false;
+  }
+
+  // Zoom support
+  if (caps && caps.zoom) {
+    const min = caps.zoom.min ?? 1;
+    const max = caps.zoom.max ?? 1;
+    const step = caps.zoom.step ?? 0.1;
+    const current = settings?.zoom ?? min;
+    zoomCaps = { min, max, step, current };
+    UI.btnZoomIn.disabled = false;
+    UI.btnZoomOut.disabled = false;
+    UI.zoomLabel.textContent = `Zoom: ${current.toFixed(1)}x`;
+  }
+
+  // Try to set continuous focus if supported
+  try {
+    if (caps && caps.focusMode && Array.isArray(caps.focusMode) && caps.focusMode.includes("continuous")) {
+      await activeTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+    }
+  } catch (_) {
+    // ignore
+  }
+}
+
+async function setTorch(enabled) {
+  if (!activeTrack) return;
+  try {
+    await activeTrack.applyConstraints({ advanced: [{ torch: !!enabled }] });
+    torchOn = !!enabled;
+    UI.btnTorch.textContent = torchOn ? "Torch On" : "Torch";
+  } catch (e) {
+    // Some devices report torch but fail applyConstraints
+    console.error(e);
+    setStatus("Torch not supported", "warn");
+    UI.btnTorch.disabled = true;
+  }
+}
+
+async function setZoom(newZoom) {
+  if (!activeTrack || !zoomCaps) return;
+  const z = Math.min(zoomCaps.max, Math.max(zoomCaps.min, newZoom));
+  try {
+    await activeTrack.applyConstraints({ advanced: [{ zoom: z }] });
+    zoomCaps.current = z;
+    UI.zoomLabel.textContent = `Zoom: ${z.toFixed(1)}x`;
+  } catch (e) {
+    console.error(e);
+    setStatus("Zoom not supported", "warn");
+    UI.btnZoomIn.disabled = true;
+    UI.btnZoomOut.disabled = true;
+    UI.zoomLabel.textContent = "Zoom: —";
+  }
 }
 
 async function lookupBarcode(barcode) {
@@ -204,10 +286,8 @@ async function lookupBarcode(barcode) {
     return;
   }
 
-  // Update “have” indicator immediately
   updateActionsForBarcode(barcode);
 
-  // If already owned, show stored metadata immediately
   if (state.catalogByBarcode[barcode]) {
     const owned = state.catalogByBarcode[barcode];
     state.lastScan = { ...owned };
@@ -219,23 +299,15 @@ async function lookupBarcode(barcode) {
   setStatus("Looking up…", "normal");
   UI.scanOverlay.style.display = "none";
 
-  // MusicBrainz Release search by barcode
-  // docs: /ws/2/release?query=barcode:XXXXXXXX&fmt=json 5
   const url =
     "https://musicbrainz.org/ws/2/release/?fmt=json&limit=10&query=" +
     encodeURIComponent(`barcode:${barcode}`);
 
   try {
     const res = await fetch(url, {
-      headers: {
-        "Accept": "application/json",
-        "User-Agent": MB_APP_UA,
-      },
+      headers: { "Accept": "application/json", "User-Agent": MB_APP_UA },
     });
-
-    if (!res.ok) {
-      throw new Error(`MusicBrainz HTTP ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`MusicBrainz HTTP ${res.status}`);
 
     const data = await res.json();
     const best = pickBestRelease(data.releases);
@@ -243,8 +315,8 @@ async function lookupBarcode(barcode) {
     if (!best) {
       state.lastScan = { barcode, title: "Not found", artist: "—", date: "", mbid: "", source: "manual" };
       uiSetMeta(state.lastScan);
-      setStatus("Not found (manual add?)", "warn");
-      UI.btnAdd.disabled = false; // allow adding a placeholder if you want
+      setStatus("Not found (tap Add anyway)", "warn");
+      UI.btnAdd.disabled = false;
       return;
     }
 
@@ -252,7 +324,7 @@ async function lookupBarcode(barcode) {
       barcode,
       title: best.title || "Unknown Title",
       artist: extractArtist(best),
-      date: best.date ? String(best.date).slice(0,4) : "",
+      date: best.date ? String(best.date).slice(0, 4) : "",
       mbid: best.id || "",
       source: "musicbrainz",
       addedAt: new Date().toISOString(),
@@ -261,14 +333,13 @@ async function lookupBarcode(barcode) {
     state.lastScan = item;
     uiSetMeta(item);
     updateActionsForBarcode(barcode);
-    setStatus("Found metadata", "ok");
+    setStatus("Found", "ok");
   } catch (err) {
-    // Could be network/CORS/device restrictions
+    console.error(err);
     state.lastScan = { barcode, title: "Lookup failed", artist: "—", date: "", mbid: "", source: "manual" };
     uiSetMeta(state.lastScan);
     updateActionsForBarcode(barcode);
     setStatus("Lookup failed", "bad");
-    console.error(err);
   }
 }
 
@@ -283,29 +354,64 @@ async function startScan() {
   UI.btnStartScan.disabled = true;
   UI.btnStopScan.disabled = false;
   UI.scanOverlay.style.display = "flex";
-  setStatus("Camera…", "normal");
+  setStatus("Opening camera…", "normal");
 
   try {
-    // Multi-format reader (UPC/EAN/Code128 etc.)
-    scanner = new ZXingBrowser.BrowserMultiFormatReader();
+    // Restrict formats: makes decoding faster and more stable on weak cameras.
+    const hints = new Map();
+    hints.set(
+      ZXingBrowser.DecodeHintType.POSSIBLE_FORMATS,
+      [
+        ZXingBrowser.BarcodeFormat.EAN_13,
+        ZXingBrowser.BarcodeFormat.UPC_A,
+        ZXingBrowser.BarcodeFormat.EAN_8,
+      ]
+    );
+    // Try-harder can help at the cost of CPU (ok for tiny preview)
+    hints.set(ZXingBrowser.DecodeHintType.TRY_HARDER, true);
 
-    // Try environment/back camera first (if available)
-    const constraints = { video: { facingMode: "environment" }, audio: false };
+    scanner = new ZXingBrowser.BrowserMultiFormatReader(hints);
 
-    await scanner.decodeFromConstraints(constraints, UI.video, (result, err) => {
+    // Aggressive constraints: ask for more pixels + prefer back camera.
+    // Some devices ignore this, but it helps when supported.
+    const constraints = {
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        // Some browsers accept focusMode here; others only via applyConstraints
+        // focusMode: "continuous"
+      },
+    };
+
+    await scanner.decodeFromConstraints(constraints, UI.video, async (result, err) => {
+      // Throttle decodes a bit so we don't hammer the CPU
+      const now = Date.now();
+      if (now - lastDecodeAt < 150) return;
+
       if (result) {
+        lastDecodeAt = now;
         const text = result.getText ? result.getText() : String(result);
         const code = normalizeBarcode(text);
 
-        if (code) {
-          // Stop after one successful scan
+        // Many UPC-A barcodes can be returned as EAN-13 with leading 0
+        const normalized = code.length === 13 && code.startsWith("0") ? code.slice(1) : code;
+
+        if (normalized && normalized.length >= 8) {
           stopScan();
-          UI.manualBarcode.value = code;
-          lookupBarcode(code);
+          UI.manualBarcode.value = normalized;
+          lookupBarcode(normalized);
         }
       }
-      // ignore NotFoundException spam; it just means “no barcode in frame”
     });
+
+    // After stream is attached, grab the underlying MediaStream from the video element
+    // (ZXing sets video.srcObject internally)
+    const stream = UI.video.srcObject;
+    if (stream && stream.getVideoTracks && stream.getVideoTracks().length) {
+      await initTrackControls(stream);
+    }
 
     setStatus("Scanning…", "normal");
   } catch (e) {
@@ -320,20 +426,33 @@ async function startScan() {
 
 function stopScan() {
   if (!scannerActive) return;
-  try {
-    scanner?.reset?.();
-  } catch (_) {}
+
+  try { scanner?.reset?.(); } catch (_) {}
   scanner = null;
   scannerActive = false;
 
-  // Stop video tracks if possible
+  try {
+    if (mediaStream && mediaStream.getTracks) {
+      mediaStream.getTracks().forEach((t) => t.stop());
+    }
+  } catch (_) {}
+
   try {
     const stream = UI.video.srcObject;
-    if (stream && stream.getTracks) {
-      stream.getTracks().forEach(t => t.stop());
-    }
+    if (stream && stream.getTracks) stream.getTracks().forEach((t) => t.stop());
     UI.video.srcObject = null;
   } catch (_) {}
+
+  mediaStream = null;
+  activeTrack = null;
+  torchOn = false;
+  zoomCaps = null;
+
+  UI.btnTorch.disabled = true;
+  UI.btnZoomIn.disabled = true;
+  UI.btnZoomOut.disabled = true;
+  UI.zoomLabel.textContent = "Zoom: —";
+  UI.btnTorch.textContent = "Torch";
 
   UI.btnStartScan.disabled = false;
   UI.btnStopScan.disabled = true;
@@ -343,12 +462,9 @@ function stopScan() {
 
 async function addLastScan() {
   const item = state.lastScan;
-  if (!item?.barcode) return;
-
-  const barcode = normalizeBarcode(item.barcode);
+  const barcode = normalizeBarcode(item?.barcode);
   if (!barcode) return;
 
-  // If “Not found”, let user at least store it; they can edit later in a future version.
   state.catalogByBarcode[barcode] = { ...item, barcode, addedAt: new Date().toISOString() };
   await saveState();
   updateActionsForBarcode(barcode);
@@ -363,13 +479,6 @@ async function removeLastScan() {
   await saveState();
   updateActionsForBarcode(barcode);
   setStatus("Removed", "ok");
-}
-
-function showLibrary(show) {
-  UI.libraryView.style.display = show ? "block" : "none";
-  UI.btnBack.style.display = show ? "inline-flex" : "none";
-  UI.btnLibrary.style.display = show ? "none" : "inline-flex";
-  if (show) renderLibrary();
 }
 
 function exportJson() {
@@ -399,6 +508,20 @@ async function importJsonFile(file) {
 function wireUI() {
   UI.btnStartScan.addEventListener("click", startScan);
   UI.btnStopScan.addEventListener("click", stopScan);
+
+  UI.btnTorch.addEventListener("click", async () => {
+    await setTorch(!torchOn);
+  });
+
+  UI.btnZoomIn.addEventListener("click", async () => {
+    if (!zoomCaps) return;
+    await setZoom(zoomCaps.current + zoomCaps.step);
+  });
+
+  UI.btnZoomOut.addEventListener("click", async () => {
+    if (!zoomCaps) return;
+    await setZoom(zoomCaps.current - zoomCaps.step);
+  });
 
   UI.btnLookup.addEventListener("click", () => lookupBarcode(UI.manualBarcode.value));
   UI.manualBarcode.addEventListener("keydown", (e) => {
@@ -430,7 +553,6 @@ function wireUI() {
   await loadState();
   wireUI();
 
-  // Restore last view quickly
   if (state.lastScan?.barcode) {
     uiSetMeta(state.lastScan);
     updateActionsForBarcode(state.lastScan.barcode);
