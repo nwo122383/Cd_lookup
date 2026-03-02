@@ -23,21 +23,15 @@
       <main>
         <section class="card">
           <div class="row">
-            <button id="btnStartScan" class="primary">Scan</button>
+            <button id="btnStartScan" class="primary">Camera</button>
+            <button id="btnSnap" class="secondary" disabled>Snap</button>
             <button id="btnStopScan" class="ghost" disabled>Stop</button>
-            <button id="btnTorch" class="ghost" disabled>Torch</button>
-          </div>
-
-          <div class="row">
-            <button id="btnZoomOut" class="ghost" disabled>−</button>
-            <div class="small" id="zoomLabel" style="flex:1; text-align:center;">Zoom: —</div>
-            <button id="btnZoomIn" class="ghost" disabled>+</button>
           </div>
 
           <div class="videoWrap">
             <video id="video" playsinline muted></video>
             <div class="overlay" id="scanOverlay">
-              Hold steady • fill the frame
+              Fill frame with barcode • tap Snap
             </div>
           </div>
 
@@ -69,6 +63,9 @@
               <button id="btnRemove" class="danger" disabled>Remove</button>
             </div>
           </div>
+
+          <!-- hidden canvas for snapshot decoding -->
+          <canvas id="snapCanvas" width="640" height="480" style="display:none;"></canvas>
         </section>
 
         <section class="card">
@@ -95,7 +92,7 @@
 
       <footer>
         <div class="hint">
-          Tip: bright light + steady + barcode fills frame
+          Best results: bright light + barcode close + tap Snap
         </div>
       </footer>
     </div>
