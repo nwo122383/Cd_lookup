@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=240, height=282, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <title>CD Catalog</title>
+    <link rel="stylesheet" href="./styles.css" />
+
+    <!-- ZXing (barcode scanning) -->
+    <script src="https://unpkg.com/@zxing/browser@0.1.1"></script>
+  </head>
+
+  <body>
+    <div id="app">
+      <header>
+        <div class="title">CD Catalog</div>
+        <div class="status" id="statusPill">Ready</div>
+      </header>
+
+      <main>
+        <section class="card">
+          <div class="row">
+            <button id="btnStartScan" class="primary">Scan</button>
+            <button id="btnStopScan" class="ghost" disabled>Stop</button>
+          </div>
+
+          <div class="videoWrap">
+            <video id="video" playsinline muted></video>
+            <div class="overlay" id="scanOverlay">
+              Point at barcode
+            </div>
+          </div>
+
+          <div class="row">
+            <input
+              id="manualBarcode"
+              class="input"
+              placeholder="Or type barcode"
+              inputmode="numeric"
+              autocomplete="off"
+            />
+            <button id="btnLookup" class="secondary">Lookup</button>
+          </div>
+
+          <div class="result" id="resultBox">
+            <div class="resultTop">
+              <div class="badge" id="haveBadge">—</div>
+              <div class="barcode" id="barcodeText">No code yet</div>
+            </div>
+
+            <div class="meta">
+              <div class="metaLine" id="metaTitle">—</div>
+              <div class="metaLine dim" id="metaArtist">—</div>
+              <div class="metaLine dim" id="metaYear">—</div>
+            </div>
+
+            <div class="row">
+              <button id="btnAdd" class="primary" disabled>Add</button>
+              <button id="btnRemove" class="danger" disabled>Remove</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="row">
+            <button id="btnLibrary" class="secondary">Library</button>
+            <button id="btnBack" class="ghost" style="display:none;">Back</button>
+          </div>
+
+          <div id="libraryView" style="display:none;">
+            <div class="libraryHeader">
+              <div class="small" id="libraryCount">0 items</div>
+              <div class="row">
+                <button id="btnExport" class="ghost">Export</button>
+                <label class="ghost fileLabel">
+                  Import
+                  <input id="fileImport" type="file" accept="application/json" />
+                </label>
+              </div>
+            </div>
+            <div id="libraryList" class="libraryList"></div>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <div class="hint">
+          ✅ owned · ❌ not owned · tap Library to browse
+        </div>
+      </footer>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
