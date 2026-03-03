@@ -1,85 +1,147 @@
 /* global ZXing */
 
-const statusEl = document.getElementById("status");
+const STORAGE_KEY = "cd_library_r1_v2";
+const SCROLL_STEP = 56;
+const BARCODE_FORMATS = [
+  "ean_13",
+  "ean_8",
+  "upc_a",
+  "upc_e",
+  "code_128",
+  "code_39",
+  "itf",
+];
 
-const screens = {
-  scan: document.getElementById("screen-scan"),
-  result: document.getElementById("screen-result"),
-  search: document.getElementById("screen-search"),
-  catalog: document.getElementById("screen-catalog"),
+const state = {
+  scanning: false,
+  stream: null,
+  rafId: null,
+  zxingReader: null,
+  cameraMode: "environment",
+  cameraLabel: "Camera idle",
+  status: "Ready",
+  statusDetail: "Rabbit creation mode will use creationStorage when available.",
+  lastBarcode: "",
+  matches: [],
+  selectedReleaseId: "",
+  library: [],
+  busy: false,
 };
 
-const tabs = {
-  scan: document.getElementById("tab-scan"),
-  search: document.getElementById("tab-search"),
-  catalog: document.getElementById("tab-catalog"),
+const el = {
+  status: document.getElementById("status"),
+  statusDetail: document.getElementById("statusDetail"),
+  video: document.getElementById("video"),
+  scroll: document.getElementById("appScroll"),
+  cameraLabel: document.getElementById("cameraLabel"),
+  runtimeLabel: document.getElementById("runtimeLabel"),
+  btnStart: document.getElementById("btn-start"),
+  btnStop: document.getElementById("btn-stop"),
+  btnFlip: document.getElementById("btn-flip"),
+  btnRescan: document.getElementById("btn-rescan"),
+  btnAdd: document.getElementById("btn-add"),
+  btnLookup: document.getElementById("btn-lookup"),
+  manualBarcode: document.getElementById("manualBarcode"),
+  currentBarcode: document.getElementById("currentBarcode"),
+  matchBanner: document.getElementById("matchBanner"),
+  selectedCard: document.getElementById("selectedCard"),
+  releaseChoices: document.getElementById("releaseChoices"),
+  libraryCount: document.getElementById("libraryCount"),
+  libraryList: document.getElementById("libraryList"),
+  btnClear: document.getElementById("btn-clear"),
 };
 
-const videoEl = document.getElementById("video");
-const cameraInfoEl = document.getElementById("cameraInfo");
-
-const btnPermission = document.getElementById("btn-permission");
-const btnStart = document.getElementById("btn-start");
-const btnStop = document.getElementById("btn-stop");
-
-const scannedValueEl = document.getElementById("scannedValue");
-const btnSearch = document.getElementById("btn-search");
-const btnAddScanned = document.getElementById("btn-add-scanned");
-const btnScanAgain = document.getElementById("btn-scan-again");
-
-const manualInput = document.getElementById("manualInput");
-const btnManualSearch = document.getElementById("btn-manual-search");
-const btnBack = document.getElementById("btn-back");
-
-const resultsEl = document.getElementById("results");
-
-const catalogListEl = document.getElementById("catalogList");
-const btnClear = document.getElementById("btn-clear");
-
-const STORAGE_KEY = "cd_catalog_simple_v1";
-const REAR_CAMERA_LABEL_RE = /(back|rear|environment|world|outward|main)/i;
-const FRONT_CAMERA_LABEL_RE = /(front|user|selfie|face|inward)/i;
-
-let activeScreen = "scan";
-let lastScanned = "";
-let scanning = false;
-
-let stream = null;
-let rafId = null;
-
-// ZXing fallback (stream-based)
-let zxingReader = null;
-let activeCameraSummary = "Camera idle";
-
-function setStatus(text) {
-  statusEl.textContent = text;
+function setStatus(text, detail = state.statusDetail) {
+  state.status = text;
+  state.statusDetail = detail;
+  el.status.textContent = text;
+  el.statusDetail.textContent = detail;
 }
 
-function setCameraInfo(text) {
-  activeCameraSummary = text;
-  cameraInfoEl.textContent = text;
+function setCameraLabel(text) {
+  state.cameraLabel = text;
+  el.cameraLabel.textContent = text;
 }
 
-function showScreen(name) {
-  if (activeScreen === "scan" && name !== "scan") {
-    stopScan().catch(() => {});
+function isCreationStorageAvailable() {
+  return Boolean(window.creationStorage?.plain);
+}
+
+function getRuntimeLabel() {
+  if (isCreationStorageAvailable()) return "Rabbit creation storage active";
+  return "Browser fallback storage active";
+}
+
+function encodeBase64(text) {
+  if (window.TextEncoder) {
+    const bytes = new TextEncoder().encode(text);
+    let binary = "";
+    bytes.forEach((value) => {
+      binary += String.fromCharCode(value);
+    });
+    return btoa(binary);
   }
 
-  activeScreen = name;
-
-  Object.keys(screens).forEach((k) => {
-    screens[k].classList.toggle("active", k === name);
-  });
-
-  tabs.scan.classList.toggle("active", name === "scan");
-  tabs.search.classList.toggle("active", name === "search");
-  tabs.catalog.classList.toggle("active", name === "catalog");
-
-  if (name === "catalog") renderCatalog();
+  return btoa(unescape(encodeURIComponent(text)));
 }
 
-function escapeHtml(s) {
-  return String(s || "")
+function decodeBase64(text) {
+  const binary = atob(text);
+
+  if (window.TextDecoder) {
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  }
+
+  return decodeURIComponent(escape(binary));
+}
+
+const storage = {
+  async loadLibrary() {
+    if (isCreationStorageAvailable()) {
+      const raw = await window.creationStorage.plain.getItem(STORAGE_KEY);
+      if (!raw) return [];
+      return parseStoredLibrary(raw);
+    }
+
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    return parseStoredLibrary(raw);
+  },
+
+  async saveLibrary(list) {
+    const payload = encodeBase64(JSON.stringify(list));
+
+    if (isCreationStorageAvailable()) {
+      await window.creationStorage.plain.setItem(STORAGE_KEY, payload);
+      return;
+    }
+
+    localStorage.setItem(STORAGE_KEY, payload);
+  },
+
+  async clearLibrary() {
+    if (isCreationStorageAvailable()) {
+      await window.creationStorage.plain.removeItem(STORAGE_KEY);
+      return;
+    }
+
+    localStorage.removeItem(STORAGE_KEY);
+  },
+};
+
+function parseStoredLibrary(raw) {
+  try {
+    const decoded = decodeBase64(raw);
+    const parsed = JSON.parse(decoded);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function escapeHtml(value) {
+  return String(value || "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -87,61 +149,315 @@ function escapeHtml(s) {
     .replaceAll("'", "&#039;");
 }
 
-function getErrorMessage(e) {
-  if (!e) return "Unknown error";
-  if (typeof e === "string") return e;
-  return e.message || e.name || JSON.stringify(e);
+function getErrorMessage(error) {
+  if (!error) return "Unknown error";
+  if (typeof error === "string") return error;
+  return error.message || error.name || JSON.stringify(error);
 }
 
-function stopMediaStream(mediaStream) {
+function normalizeBarcode(value) {
+  return String(value || "").replace(/[^\d]/g, "");
+}
+
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[\s\-_:;,.!?'"()&/]+/g, " ")
+    .trim();
+}
+
+function buildAlbumKey(item) {
+  return `${normalizeText(item.artist)}|${normalizeText(item.title)}`;
+}
+
+function buildLibraryKey(item) {
+  return item.releaseId || `${item.barcode || ""}|${buildAlbumKey(item)}|${item.year || ""}`;
+}
+
+function createDraftReleaseFromBarcode(barcode) {
+  const normalized = normalizeBarcode(barcode);
+  if (!normalized) return null;
+
+  return {
+    releaseId: `barcode:${normalized}`,
+    releaseGroupId: "",
+    title: `Barcode ${normalized}`,
+    artist: "Unidentified CD",
+    year: "",
+    barcode: normalized,
+    country: "",
+    format: "CD",
+    label: "",
+    addedAt: 0,
+  };
+}
+
+function findBarcodeOwnershipEntry(barcode) {
+  const normalized = normalizeBarcode(barcode);
+  if (!normalized) return null;
+
+  return (
+    state.library.find((item) => normalizeBarcode(item.barcode) === normalized) || null
+  );
+}
+
+function stopMediaStream(stream) {
   try {
-    if (mediaStream && mediaStream.getTracks) {
-      mediaStream.getTracks().forEach((track) => track.stop());
+    if (stream?.getTracks) {
+      stream.getTracks().forEach((track) => track.stop());
     }
   } catch {}
 }
 
-function normalizeBarcode(text) {
-  return String(text || "").replace(/[^\d]/g, "");
+function mapArtistCredit(artistCredit) {
+  if (!Array.isArray(artistCredit)) return "Unknown Artist";
+
+  return artistCredit
+    .map((part) => `${part.name || part.artist?.name || ""}${part.joinphrase || ""}`)
+    .join("")
+    .trim() || "Unknown Artist";
 }
 
-function isBarcodeValue(text) {
-  return /^\d{8,14}$/.test(normalizeBarcode(text));
-}
+function mapRelease(release) {
+  const primaryMedium = Array.isArray(release.media) ? release.media[0] : null;
+  const releaseGroup = release["release-group"] || release.release_group || {};
 
-function getTrackSummary(track, fallbackLabel = "") {
-  const settings = track?.getSettings ? track.getSettings() : {};
   return {
-    label: track?.label || fallbackLabel || "Unnamed camera",
-    facingMode: settings?.facingMode || "",
-    deviceId: settings?.deviceId || "",
+    releaseId: release.id || "",
+    releaseGroupId: releaseGroup.id || "",
+    title: release.title || "Unknown Title",
+    artist: mapArtistCredit(release["artist-credit"]),
+    year: release.date ? String(release.date).slice(0, 4) : "",
+    barcode: release.barcode || "",
+    country: release.country || "",
+    format: primaryMedium?.format || "",
+    label: release["label-info"]?.[0]?.label?.name || "",
+    addedAt: 0,
   };
 }
 
-function isLikelyRearCamera(summary) {
-  return (
-    summary.facingMode === "environment" ||
-    REAR_CAMERA_LABEL_RE.test(summary.label || "")
-  );
+function getSelectedMatch() {
+  return state.matches.find((item) => item.releaseId === state.selectedReleaseId) || null;
 }
 
-function isLikelyFrontCamera(summary) {
-  return (
-    summary.facingMode === "user" ||
-    FRONT_CAMERA_LABEL_RE.test(summary.label || "")
-  );
+function findOwnership(match) {
+  if (!match) return { exact: null, version: null };
+
+  const exact =
+    state.library.find((item) => {
+      if (item.releaseId && match.releaseId && item.releaseId === match.releaseId) {
+        return true;
+      }
+
+      return normalizeBarcode(item.barcode) &&
+        normalizeBarcode(item.barcode) === normalizeBarcode(match.barcode);
+    }) || null;
+
+  if (exact) {
+    return { exact, version: exact };
+  }
+
+  const version =
+    state.library.find((item) => {
+      if (item.releaseGroupId && match.releaseGroupId) {
+        return item.releaseGroupId === match.releaseGroupId;
+      }
+
+      return buildAlbumKey(item) === buildAlbumKey(match);
+    }) || null;
+
+  return { exact: null, version };
 }
 
-function formatCameraSummary(summary) {
-  const parts = [];
+function ownershipMessage(match) {
+  if (!match) {
+    if (state.lastBarcode) {
+      const existing = findBarcodeOwnershipEntry(state.lastBarcode);
 
-  if (summary?.label) parts.push(summary.label);
-  if (summary?.facingMode) parts.push(`mode: ${summary.facingMode}`);
+      if (existing) {
+        return {
+          tone: "owned",
+          title: "You already saved this barcode.",
+          detail: `${existing.artist} - ${existing.title}`,
+        };
+      }
 
-  return parts.length ? `Camera: ${parts.join(" • ")}` : "Camera opened";
+      return {
+        tone: "version",
+        title: "No MusicBrainz match yet.",
+        detail: "You can still save the barcode-only entry to your library.",
+      };
+    }
+
+    return {
+      tone: "idle",
+      title: "Scan a barcode to look up a CD.",
+      detail: "Matches and ownership checks will appear here.",
+    };
+  }
+
+  const ownership = findOwnership(match);
+
+  if (ownership.exact) {
+    return {
+      tone: "owned",
+      title: "You own this exact release.",
+      detail: `${match.artist} - ${match.title}${match.year ? ` (${match.year})` : ""}`,
+    };
+  }
+
+  if (ownership.version) {
+    return {
+      tone: "version",
+      title: "You own another version of this album.",
+      detail: `${ownership.version.artist} - ${ownership.version.title}${ownership.version.year ? ` (${ownership.version.year})` : ""}`,
+    };
+  }
+
+  return {
+    tone: "new",
+    title: "This CD is not in your library yet.",
+    detail: "You can add the selected release below.",
+  };
 }
 
-async function listVideoInputs() {
+function formatReleaseMeta(item) {
+  return [item.year, item.country, item.format, item.label].filter(Boolean).join(" • ");
+}
+
+function renderSelectedRelease() {
+  const selected = getSelectedMatch();
+  const ownership = ownershipMessage(selected);
+
+  el.currentBarcode.textContent = state.lastBarcode || "No barcode scanned yet";
+
+  el.matchBanner.className = `match-banner tone-${ownership.tone}`;
+  el.matchBanner.innerHTML = `
+    <div class="banner-title">${escapeHtml(ownership.title)}</div>
+    <div class="banner-detail">${escapeHtml(ownership.detail)}</div>
+  `;
+
+  if (!selected) {
+    const draft = createDraftReleaseFromBarcode(state.lastBarcode);
+
+    if (draft) {
+      const existing = findBarcodeOwnershipEntry(draft.barcode);
+      el.selectedCard.innerHTML = `
+        <div class="selected-title">${escapeHtml(draft.title)}</div>
+        <div class="selected-subtitle">${escapeHtml(draft.artist)}</div>
+        <div class="selected-meta">No MusicBrainz release matched this barcode.</div>
+        <div class="selected-barcode">Barcode ${escapeHtml(draft.barcode)}</div>
+      `;
+      el.btnAdd.disabled = Boolean(existing);
+      el.btnAdd.textContent = existing ? "Already Owned" : "Save Barcode Only";
+    } else {
+      el.selectedCard.innerHTML = `
+        <div class="empty-card">
+          Use Scan to read a barcode, or type a UPC below for a manual lookup.
+        </div>
+      `;
+      el.btnAdd.disabled = true;
+      el.btnAdd.textContent = "Add to Library";
+    }
+
+    return;
+  }
+
+  const meta = formatReleaseMeta(selected);
+  el.selectedCard.innerHTML = `
+    <div class="selected-title">${escapeHtml(selected.title)}</div>
+    <div class="selected-subtitle">${escapeHtml(selected.artist)}</div>
+    <div class="selected-meta">${escapeHtml(meta || "MusicBrainz release")}</div>
+    <div class="selected-barcode">Barcode ${escapeHtml(selected.barcode || state.lastBarcode)}</div>
+  `;
+
+  el.btnAdd.disabled = Boolean(findOwnership(selected).exact);
+  el.btnAdd.textContent = findOwnership(selected).exact ? "Already Owned" : "Add to Library";
+}
+
+function renderReleaseChoices() {
+  if (!state.matches.length) {
+    el.releaseChoices.innerHTML = `
+      <div class="empty-card compact">
+        No release choices yet.
+      </div>
+    `;
+    return;
+  }
+
+  el.releaseChoices.innerHTML = "";
+
+  state.matches.forEach((match) => {
+    const ownership = findOwnership(match);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `choice ${match.releaseId === state.selectedReleaseId ? "selected" : ""}`;
+    button.innerHTML = `
+      <div class="choice-title">${escapeHtml(match.title)}</div>
+      <div class="choice-subtitle">${escapeHtml(match.artist)}</div>
+      <div class="choice-meta">${escapeHtml(formatReleaseMeta(match) || "Release metadata unavailable")}</div>
+      <div class="choice-tag ${ownership.exact ? "owned" : ownership.version ? "version" : "new"}">
+        ${ownership.exact ? "Owned" : ownership.version ? "Own another version" : "New"}
+      </div>
+    `;
+    button.addEventListener("click", () => {
+      state.selectedReleaseId = match.releaseId;
+      renderSelectedRelease();
+      renderReleaseChoices();
+    });
+    el.releaseChoices.appendChild(button);
+  });
+}
+
+function renderLibrary() {
+  el.libraryCount.textContent = `${state.library.length}`;
+  el.libraryList.innerHTML = "";
+
+  if (!state.library.length) {
+    el.libraryList.innerHTML = `
+      <div class="empty-card">
+        Your library is empty. Scan a CD and add it here.
+      </div>
+    `;
+    return;
+  }
+
+  state.library.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "library-item";
+    row.innerHTML = `
+      <div class="library-copy">
+        <div class="library-title">${escapeHtml(item.title)}</div>
+        <div class="library-subtitle">${escapeHtml(item.artist)}</div>
+        <div class="library-meta">${escapeHtml(formatReleaseMeta(item) || `Barcode ${item.barcode || "unknown"}`)}</div>
+        <div class="library-barcode">Barcode ${escapeHtml(item.barcode || "unknown")}</div>
+      </div>
+      <button class="ghost danger" type="button">Remove</button>
+    `;
+
+    row.querySelector("button").addEventListener("click", async () => {
+      const targetKey = buildLibraryKey(item);
+      state.library = state.library.filter((entry) => buildLibraryKey(entry) !== targetKey);
+      await storage.saveLibrary(state.library);
+      renderLibrary();
+      renderSelectedRelease();
+      renderReleaseChoices();
+      setStatus("Removed from library", `${item.artist} - ${item.title}`);
+    });
+
+    el.libraryList.appendChild(row);
+  });
+}
+
+function renderAll() {
+  el.runtimeLabel.textContent = getRuntimeLabel();
+  setCameraLabel(state.cameraLabel);
+  renderSelectedRelease();
+  renderReleaseChoices();
+  renderLibrary();
+}
+
+async function readVideoDevices() {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     return devices.filter((device) => device.kind === "videoinput");
@@ -150,119 +466,57 @@ async function listVideoInputs() {
   }
 }
 
-function pickPreferredVideoInput(devices) {
-  if (!devices.length) return null;
-
-  const rearDevice = devices.find((device) =>
-    REAR_CAMERA_LABEL_RE.test(device.label || ""),
-  );
-  if (rearDevice) return rearDevice;
-
-  const nonFrontDevice = devices.find(
-    (device) => !FRONT_CAMERA_LABEL_RE.test(device.label || ""),
-  );
-  return nonFrontDevice || devices[0];
-}
-
-function buildCameraAttempts(preferredDeviceId) {
-  const baseVideo = {
+function buildCameraAttempts(mode, preferredDeviceId) {
+  const base = {
     width: { ideal: 1280 },
     height: { ideal: 720 },
   };
 
   return [
     {
-      label: "rear facing camera",
-      constraints: {
-        video: { ...baseVideo, facingMode: { exact: "environment" } },
-        audio: false,
-      },
+      label: `${mode} exact`,
+      constraints: { video: { ...base, facingMode: { exact: mode } }, audio: false },
     },
     preferredDeviceId
       ? {
-          label: "preferred rear camera device",
-          constraints: {
-            video: { ...baseVideo, deviceId: { exact: preferredDeviceId } },
-            audio: false,
-          },
+          label: `${mode} device`,
+          constraints: { video: { ...base, deviceId: { exact: preferredDeviceId } }, audio: false },
         }
       : null,
     {
-      label: "camera with environment preference",
-      constraints: {
-        video: { ...baseVideo, facingMode: { ideal: "environment" } },
-        audio: false,
-      },
+      label: `${mode} ideal`,
+      constraints: { video: { ...base, facingMode: { ideal: mode } }, audio: false },
     },
     {
       label: "default camera",
-      constraints: {
-        video: baseVideo,
-        audio: false,
-      },
+      constraints: { video: base, audio: false },
     },
   ].filter(Boolean);
 }
 
-async function tryApplyRearFacing(track) {
-  const capabilities = track?.getCapabilities ? track.getCapabilities() : null;
-  const facingModes = Array.isArray(capabilities?.facingMode)
-    ? capabilities.facingMode
-    : [];
-
-  if (!facingModes.includes("environment")) return;
-
-  try {
-    await track.applyConstraints({ facingMode: { exact: "environment" } });
-  } catch {
-    try {
-      await track.applyConstraints({ facingMode: "environment" });
-    } catch {}
-  }
+function pickPreferredDevice(devices, mode) {
+  const target = mode === "environment" ? /(back|rear|environment|world|main)/i : /(front|user|face|selfie)/i;
+  return devices.find((device) => target.test(device.label || "")) || null;
 }
 
-async function acquireRearCameraStream() {
-  const devices = await listVideoInputs();
-  const preferredDevice = pickPreferredVideoInput(devices);
-  const attempts = buildCameraAttempts(preferredDevice?.deviceId || "");
+async function openCameraStream(mode = state.cameraMode) {
+  const devices = await readVideoDevices();
+  const preferredDevice = pickPreferredDevice(devices, mode);
+  const attempts = buildCameraAttempts(mode, preferredDevice?.deviceId || "");
   let lastError = null;
 
   for (const attempt of attempts) {
     let candidateStream = null;
 
     try {
-      candidateStream = await navigator.mediaDevices.getUserMedia(
-        attempt.constraints,
-      );
-
+      candidateStream = await navigator.mediaDevices.getUserMedia(attempt.constraints);
       const track = candidateStream.getVideoTracks()[0];
-      if (!track) {
-        throw new Error("No video track returned");
-      }
+      const settings = track?.getSettings ? track.getSettings() : {};
+      const label = track?.label || attempt.label;
+      const facing = settings?.facingMode ? ` (${settings.facingMode})` : "";
 
-      await tryApplyRearFacing(track);
-
-      const summary = getTrackSummary(track, attempt.label);
-      const ambiguousButAcceptable =
-        devices.length <= 1 && !isLikelyFrontCamera(summary);
-
-      if (
-        isLikelyFrontCamera(summary) &&
-        !isLikelyRearCamera(summary) &&
-        devices.length > 1
-      ) {
-        throw new Error(`Opened front-facing camera: ${summary.label}`);
-      }
-
-      if (isLikelyRearCamera(summary) || ambiguousButAcceptable) {
-        return { stream: candidateStream, summary };
-      }
-
-      if (devices.length <= 1) {
-        return { stream: candidateStream, summary };
-      }
-
-      throw new Error(`Camera orientation ambiguous: ${summary.label}`);
+      setCameraLabel(`Camera ${mode}: ${label}${facing}`);
+      return candidateStream;
     } catch (error) {
       lastError = error;
       stopMediaStream(candidateStream);
@@ -272,376 +526,323 @@ async function acquireRearCameraStream() {
   throw lastError || new Error("Unable to open the camera");
 }
 
-async function requestPermission() {
-  let permissionStream = null;
+async function stopScan() {
+  state.scanning = false;
+
+  if (state.rafId) {
+    cancelAnimationFrame(state.rafId);
+    state.rafId = null;
+  }
 
   try {
-    setStatus("Requesting camera permission…");
-    const acquired = await acquireRearCameraStream();
-    permissionStream = acquired.stream;
-    setCameraInfo(formatCameraSummary(acquired.summary));
-    setStatus("Camera permission granted");
-  } catch (e) {
-    setStatus("Permission failed: " + getErrorMessage(e));
-    throw e;
-  } finally {
-    stopMediaStream(permissionStream);
-  }
-}
+    state.zxingReader?.reset();
+  } catch {}
 
-async function openRearCameraStream() {
-  const acquired = await acquireRearCameraStream();
-  stream = acquired.stream;
-  setCameraInfo(formatCameraSummary(acquired.summary));
-
-  videoEl.srcObject = stream;
-  // On some WebViews you must call play() after user gesture
-  try {
-    await videoEl.play();
-  } catch {
-    // ignore
-  }
-}
-
-function closeStream() {
-  stopMediaStream(videoEl.srcObject);
-  videoEl.srcObject = null;
-  stopMediaStream(stream);
-  stream = null;
+  stopMediaStream(el.video.srcObject);
+  el.video.srcObject = null;
+  stopMediaStream(state.stream);
+  state.stream = null;
+  el.btnStop.disabled = true;
 }
 
 async function startScan() {
-  if (scanning) return;
-  scanning = true;
-  btnStart.disabled = true;
+  if (state.scanning || state.busy) return;
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    setStatus("Camera API unavailable", "Rabbit creations use standard web camera APIs. This browser does not expose them.");
+    return;
+  }
+
+  state.scanning = true;
+  el.btnStop.disabled = false;
+  setStatus("Opening camera", `Trying ${state.cameraMode} mode first.`);
 
   try {
-    setStatus("Opening rear camera…");
-    await openRearCameraStream();
+    state.stream = await openCameraStream(state.cameraMode);
+    el.video.srcObject = state.stream;
+    await el.video.play().catch(() => {});
 
-    // Prefer native BarcodeDetector if available (often best on embedded Chromium)
     if ("BarcodeDetector" in window) {
-      setStatus("Scanning (BarcodeDetector)…");
+      setStatus("Scanning barcode", "BarcodeDetector active.");
       await scanWithBarcodeDetector();
     } else {
-      setStatus("Scanning (ZXing fallback)…");
-      await scanWithZXingFromVideo();
+      setStatus("Scanning barcode", "ZXing fallback active.");
+      await scanWithZXing();
     }
-  } catch (e) {
-    scanning = false;
-    setStatus("Scan failed: " + getErrorMessage(e));
-    alert("Scan failed:\n\n" + getErrorMessage(e));
-  } finally {
-    btnStart.disabled = false;
+  } catch (error) {
+    state.scanning = false;
+    el.btnStop.disabled = true;
+    setStatus("Scan failed", getErrorMessage(error));
   }
-}
-
-async function stopScan() {
-  scanning = false;
-
-  if (rafId) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-  }
-
-  // stop ZXing if used
-  try {
-    if (zxingReader) zxingReader.reset();
-  } catch {}
-
-  closeStream();
-  setStatus("Stopped");
 }
 
 async function scanWithBarcodeDetector() {
-  // Try common barcode formats; if unsupported, detector will still often work.
   let detector;
+
   try {
-    detector = new BarcodeDetector({
-      formats: [
-        "ean_13",
-        "ean_8",
-        "upc_a",
-        "upc_e",
-        "code_128",
-        "code_39",
-        "itf",
-        "qr_code",
-      ],
-    });
+    detector = new BarcodeDetector({ formats: BARCODE_FORMATS });
   } catch {
     detector = new BarcodeDetector();
   }
 
-  // Use ImageCapture for best compatibility; fallback to canvas draw if needed
-  const track = stream.getVideoTracks()[0];
-  const imageCapture = track ? new ImageCapture(track) : null;
+  const track = state.stream?.getVideoTracks?.()[0];
+  const imageCapture = track && "ImageCapture" in window ? new ImageCapture(track) : null;
 
   async function tick() {
-    if (!scanning) return;
+    if (!state.scanning) return;
 
     try {
-      let bitmap = null;
+      let codes = [];
 
-      if (imageCapture && imageCapture.grabFrame) {
-        bitmap = await imageCapture.grabFrame();
-        const codes = await detector.detect(bitmap);
-        if (codes && codes.length) {
-          onDetected(codes[0].rawValue || codes[0].value || "");
-          return;
-        }
+      if (imageCapture?.grabFrame) {
+        const bitmap = await imageCapture.grabFrame();
+        codes = await detector.detect(bitmap);
       } else {
-        // Canvas fallback (less ideal)
         const canvas = document.createElement("canvas");
-        canvas.width = videoEl.videoWidth || 640;
-        canvas.height = videoEl.videoHeight || 480;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-        const img = await createImageBitmap(canvas);
-        const codes = await detector.detect(img);
-        if (codes && codes.length) {
-          onDetected(codes[0].rawValue || codes[0].value || "");
-          return;
-        }
+        canvas.width = el.video.videoWidth || 640;
+        canvas.height = el.video.videoHeight || 480;
+        const context = canvas.getContext("2d");
+        context.drawImage(el.video, 0, 0, canvas.width, canvas.height);
+        const bitmap = await createImageBitmap(canvas);
+        codes = await detector.detect(bitmap);
       }
-    } catch {
-      // ignore scan errors per-frame
-    }
 
-    rafId = requestAnimationFrame(tick);
+      if (codes.length) {
+        const firstValue = codes[0].rawValue || codes[0].value || "";
+        await onBarcodeDetected(firstValue);
+        return;
+      }
+    } catch {}
+
+    state.rafId = requestAnimationFrame(tick);
   }
 
-  rafId = requestAnimationFrame(tick);
+  state.rafId = requestAnimationFrame(tick);
 }
 
-async function scanWithZXingFromVideo() {
-  if (!zxingReader) zxingReader = new ZXing.BrowserMultiFormatReader();
+async function scanWithZXing() {
+  if (!state.zxingReader) {
+    state.zxingReader = new ZXing.BrowserMultiFormatReader();
+  }
 
-  // ZXing has a mode that reads directly from an existing <video> element
-  // (no device enumeration). This is what we want for Rabbit.
-  zxingReader.decodeFromVideoElementContinuously(videoEl, (result, err) => {
-    if (!scanning) return;
-    if (result) {
-      onDetected(result.getText());
-    }
-    // ignore err
+  state.zxingReader.decodeFromVideoElementContinuously(el.video, async (result) => {
+    if (!state.scanning || !result) return;
+    await onBarcodeDetected(result.getText());
   });
 }
 
-function onDetected(text) {
-  if (!text) return;
-  lastScanned = text;
-  scannedValueEl.textContent = text;
-  setStatus("Scanned!");
-  stopScan().catch(() => {});
-  showScreen("result");
+async function onBarcodeDetected(value) {
+  const barcode = normalizeBarcode(value);
+  if (!barcode || barcode === state.lastBarcode) return;
+
+  state.lastBarcode = barcode;
+  el.manualBarcode.value = barcode;
+  await stopScan();
+  await lookupBarcode(barcode);
 }
 
-// ---- Catalog storage ----
-function makeCatalogId(item) {
-  return (
-    item.id ||
-    item.barcode ||
-    `${item.title}|${item.artist}|${item.year || ""}|${item.format || ""}`
-  );
-}
+async function lookupBarcode(rawValue) {
+  const barcode = normalizeBarcode(rawValue);
+  if (!barcode) {
+    setStatus("Enter a barcode", "UPC/EAN values should be 8 to 14 digits.");
+    return;
+  }
 
-function getCatalog() {
+  state.busy = true;
+  state.lastBarcode = barcode;
+  el.manualBarcode.value = barcode;
+  setStatus("Looking up CD", `Searching MusicBrainz for barcode ${barcode}.`);
+
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveCatalog(list) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-}
-
-function addToCatalog(item) {
-  const list = getCatalog();
-  const id = makeCatalogId(item);
-
-  if (!list.some((x) => x._id === id)) {
-    list.unshift({ ...item, _id: id, addedAt: Date.now() });
-    saveCatalog(list);
-  }
-  renderCatalog();
-}
-
-function clearCatalog() {
-  saveCatalog([]);
-  renderCatalog();
-}
-
-function renderCatalog() {
-  const list = getCatalog();
-  catalogListEl.innerHTML = "";
-
-  if (!list.length) {
-    catalogListEl.innerHTML = `<div class="card"><div class="label">No CDs saved yet.</div></div>`;
-    return;
-  }
-
-  list.forEach((it) => {
-    const div = document.createElement("div");
-    div.className = "catalog-item";
-    div.innerHTML = `
-      <div class="result-title">${escapeHtml(it.title)}</div>
-      <div class="result-sub">${escapeHtml(it.artist)} ${it.year ? `• ${escapeHtml(it.year)}` : ""}</div>
-      <div class="result-meta">${it.barcode ? `Barcode ${escapeHtml(it.barcode)}` : "Saved locally on this device"}</div>
-    `;
-    catalogListEl.appendChild(div);
-  });
-}
-
-function mapMusicBrainzRelease(release) {
-  const artist = Array.isArray(release?.["artist-credit"])
-    ? release["artist-credit"]
-        .map((part) => part.name || part.artist?.name || "")
-        .join("")
-    : "Unknown Artist";
-  const media = Array.isArray(release?.media) ? release.media[0] : null;
-
-  return {
-    title: release?.title || "Unknown Title",
-    artist,
-    year: release?.date ? String(release.date).slice(0, 4) : "",
-    id: release?.id || "",
-    barcode: release?.barcode || "",
-    format: media?.format || "",
-    country: release?.country || "",
-  };
-}
-
-// ---- Search ----
-async function search(query) {
-  const q = String(query || "").trim();
-  if (!q) return [];
-
-  const barcode = normalizeBarcode(q);
-  const searchTerm = isBarcodeValue(barcode) ? `barcode:${barcode}` : q;
-  const url = `https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(searchTerm)}&fmt=json&limit=10`;
-  const resp = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-    },
-  });
-  if (!resp.ok) throw new Error(`Search failed (${resp.status})`);
-  const data = await resp.json();
-
-  const releases = Array.isArray(data?.releases) ? data.releases.slice(0, 10) : [];
-  return releases.map(mapMusicBrainzRelease);
-}
-
-function renderResults(items) {
-  resultsEl.innerHTML = "";
-  const catalog = getCatalog();
-
-  if (!items.length) {
-    resultsEl.innerHTML = `<div class="card"><div class="label">No results.</div></div>`;
-    return;
-  }
-
-  items.forEach((it) => {
-    const alreadySaved = catalog.some((entry) => entry._id === makeCatalogId(it));
-    const row = document.createElement("div");
-    row.className = "result-item";
-    row.innerHTML = `
-      <div>
-        <div class="result-title">${escapeHtml(it.title)}</div>
-        <div class="result-sub">${escapeHtml(it.artist)} ${it.year ? `• ${escapeHtml(it.year)}` : ""}</div>
-        <div class="result-meta">${[it.format, it.country, it.barcode].filter(Boolean).map(escapeHtml).join(" • ") || "MusicBrainz release"}</div>
-      </div>
-      <button class="btn primary small"${alreadySaved ? " disabled" : ""}>${alreadySaved ? "Added" : "Add"}</button>
-    `;
-    row.querySelector("button").addEventListener("click", () => {
-      addToCatalog(it);
-      row.querySelector("button").textContent = "Added";
-      row.querySelector("button").disabled = true;
+    const url = `https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(`barcode:${barcode}`)}&fmt=json&limit=8`;
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+      },
     });
-    resultsEl.appendChild(row);
-  });
-}
 
-async function runSearch(query) {
-  const value = String(query || "").trim();
-  if (!value) return;
-
-  setStatus("Searching…");
-  resultsEl.innerHTML = "";
-  const items = await search(value);
-  renderResults(items);
-  setStatus(`Found ${items.length}`);
-}
-
-function addScannedBarcodeToCatalog() {
-  if (!lastScanned) return;
-
-  const barcode = normalizeBarcode(lastScanned) || lastScanned;
-  addToCatalog({
-    title: `Barcode ${barcode}`,
-    artist: "Unidentified CD",
-    year: "",
-    barcode,
-    id: `barcode:${barcode}`,
-    format: "CD",
-  });
-  setStatus("Saved to library");
-  showScreen("catalog");
-}
-
-// ---- UI wiring ----
-tabs.scan.addEventListener("click", () => showScreen("scan"));
-tabs.search.addEventListener("click", () => showScreen("search"));
-tabs.catalog.addEventListener("click", () => showScreen("catalog"));
-
-btnPermission.addEventListener("click", async () => {
-  try {
-    await requestPermission();
-  } catch (e) {
-    alert("Permission failed: " + getErrorMessage(e));
-  }
-});
-
-btnStart.addEventListener("click", () => startScan());
-btnStop.addEventListener("click", () => stopScan());
-
-btnSearch.addEventListener("click", async () => {
-  manualInput.value = normalizeBarcode(lastScanned) || lastScanned || "";
-  showScreen("search");
-  manualInput.focus();
-  if (manualInput.value) {
-    try {
-      await runSearch(manualInput.value);
-    } catch (e) {
-      setStatus("Search failed: " + getErrorMessage(e));
-      alert("Search failed: " + getErrorMessage(e));
+    if (!response.ok) {
+      throw new Error(`MusicBrainz returned ${response.status}`);
     }
+
+    const payload = await response.json();
+    const releases = Array.isArray(payload.releases) ? payload.releases.map(mapRelease) : [];
+
+    state.matches = releases;
+    state.selectedReleaseId = releases[0]?.releaseId || "";
+    renderSelectedRelease();
+    renderReleaseChoices();
+
+    if (!releases.length) {
+      setStatus("No match found", "You can keep the barcode and try again later.");
+      return;
+    }
+
+    const selected = getSelectedMatch();
+    const ownership = findOwnership(selected);
+
+    if (ownership.exact) {
+      setStatus("Already owned", "This exact release is already in your library.");
+    } else if (ownership.version) {
+      setStatus("Version already owned", "You have another version of this album.");
+    } else {
+      setStatus("Match found", `${releases.length} release${releases.length === 1 ? "" : "s"} found.`);
+    }
+
+    el.scroll.scrollTo({ top: el.scroll.scrollHeight / 3, behavior: "smooth" });
+  } catch (error) {
+    state.matches = [];
+    state.selectedReleaseId = "";
+    renderSelectedRelease();
+    renderReleaseChoices();
+    setStatus("Lookup failed", getErrorMessage(error));
+  } finally {
+    state.busy = false;
   }
-});
+}
 
-btnAddScanned.addEventListener("click", () => addScannedBarcodeToCatalog());
-btnScanAgain.addEventListener("click", () => showScreen("scan"));
-btnBack.addEventListener("click", () => showScreen("scan"));
-
-btnManualSearch.addEventListener("click", async () => {
-  try {
-    await runSearch(manualInput.value);
-  } catch (e) {
-    setStatus("Search failed: " + getErrorMessage(e));
-    alert("Search failed: " + getErrorMessage(e));
+async function addSelectedToLibrary() {
+  const selected = getSelectedMatch() || createDraftReleaseFromBarcode(state.lastBarcode);
+  if (!selected) {
+    setStatus("No release selected", "Scan or look up a barcode first.");
+    return;
   }
-});
 
-btnClear.addEventListener("click", () => {
-  if (confirm("Clear your catalog?")) clearCatalog();
-});
+  const previousOwnership = getSelectedMatch()
+    ? findOwnership(selected)
+    : { exact: findBarcodeOwnershipEntry(selected.barcode), version: null };
 
-// Init
-setStatus("Idle");
-setCameraInfo(activeCameraSummary);
-showScreen("scan");
-renderCatalog();
+  if (previousOwnership.exact) {
+    setStatus("Already owned", "This exact release is already in your library.");
+    return;
+  }
+
+  const entry = {
+    ...selected,
+    addedAt: Date.now(),
+  };
+
+  state.library = [entry, ...state.library];
+  await storage.saveLibrary(state.library);
+  renderLibrary();
+  renderSelectedRelease();
+  renderReleaseChoices();
+
+  if (previousOwnership.version) {
+    setStatus("Version added", "You now own multiple versions of this album.");
+  } else {
+    setStatus("Added to library", `${selected.artist} - ${selected.title}`);
+  }
+}
+
+async function clearLibrary() {
+  state.library = [];
+  await storage.clearLibrary();
+  renderLibrary();
+  renderSelectedRelease();
+  renderReleaseChoices();
+  setStatus("Library cleared", "All stored CDs were removed from this app.");
+}
+
+async function flipCamera() {
+  state.cameraMode = state.cameraMode === "environment" ? "user" : "environment";
+  const detail = state.cameraMode === "environment"
+    ? "Trying rear-facing constraints."
+    : "Trying front-facing constraints.";
+
+  setStatus("Camera mode changed", detail);
+
+  if (state.scanning) {
+    await stopScan();
+    await startScan();
+  } else {
+    setCameraLabel(`Camera preference: ${state.cameraMode}`);
+  }
+}
+
+function handleScrollWheel(direction) {
+  const delta = direction === "down" ? SCROLL_STEP : -SCROLL_STEP;
+  el.scroll.scrollBy({ top: delta, behavior: "smooth" });
+}
+
+function isEditableTarget(target) {
+  return target instanceof HTMLElement &&
+    (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+}
+
+function attachHardwareEvents() {
+  window.addEventListener("sideClick", () => {
+    if (state.scanning) {
+      stopScan().then(() => {
+        setStatus("Scan stopped", "Side button pressed.");
+      });
+      return;
+    }
+
+    if (getSelectedMatch() && !findOwnership(getSelectedMatch()).exact) {
+      addSelectedToLibrary();
+      return;
+    }
+
+    startScan();
+  });
+
+  window.addEventListener("longPressStart", () => {
+    flipCamera();
+  });
+
+  window.addEventListener("scrollUp", () => {
+    if (isEditableTarget(document.activeElement)) return;
+    handleScrollWheel("up");
+  });
+
+  window.addEventListener("scrollDown", () => {
+    if (isEditableTarget(document.activeElement)) return;
+    handleScrollWheel("down");
+  });
+}
+
+function bindEvents() {
+  el.btnStart.addEventListener("click", () => startScan());
+  el.btnStop.addEventListener("click", () => {
+    stopScan().then(() => {
+      setStatus("Scan stopped", "Camera released.");
+    });
+  });
+  el.btnFlip.addEventListener("click", () => flipCamera());
+  el.btnRescan.addEventListener("click", () => {
+    state.matches = [];
+    state.selectedReleaseId = "";
+    state.lastBarcode = "";
+    renderSelectedRelease();
+    renderReleaseChoices();
+    startScan();
+  });
+  el.btnLookup.addEventListener("click", () => lookupBarcode(el.manualBarcode.value));
+  el.btnAdd.addEventListener("click", () => addSelectedToLibrary());
+  el.btnClear.addEventListener("click", () => {
+    if (confirm("Clear the entire CD library stored in this app?")) {
+      clearLibrary();
+    }
+  });
+  el.manualBarcode.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      lookupBarcode(el.manualBarcode.value);
+    }
+  });
+}
+
+async function init() {
+  state.library = await storage.loadLibrary();
+  el.runtimeLabel.textContent = getRuntimeLabel();
+  setCameraLabel(`Camera preference: ${state.cameraMode}`);
+  setStatus("Ready", "Scan a CD barcode. Side button starts scanning; long-press flips camera.");
+  renderAll();
+  bindEvents();
+  attachHardwareEvents();
+}
+
+init().catch((error) => {
+  setStatus("Startup failed", getErrorMessage(error));
+});
