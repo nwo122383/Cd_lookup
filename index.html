@@ -6,84 +6,115 @@
       name="viewport"
       content="width=240, height=282, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
-    <title>CD Catalog</title>
+    <title>CD Shelf</title>
     <link rel="stylesheet" href="./styles.css" />
-
-    <!-- ZXing (barcode scanning) - use latest -->
     <script src="https://unpkg.com/@zxing/browser@latest"></script>
   </head>
-
   <body>
     <div id="app">
-      <header>
-        <div class="title">CD Catalog</div>
-        <div class="status" id="status">Idle</div>
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">Rabbit r1 creation</div>
+          <h1>CD Shelf</h1>
+        </div>
+        <div class="runtime-pill" id="runtimeLabel">Loading runtime</div>
       </header>
 
-      <main>
-        <!-- Scan -->
-        <section class="screen active" id="screen-scan">
+      <main id="appScroll">
+        <section class="hero">
+          <div class="status-card">
+            <div class="status-row">
+              <span class="status-label">Status</span>
+              <span class="status-value" id="status">Ready</span>
+            </div>
+            <div class="status-detail" id="statusDetail">
+              Scan a CD barcode to look it up and store it locally.
+            </div>
+          </div>
+
           <div class="preview-wrap">
             <video id="video" autoplay muted playsinline></video>
           </div>
 
-          <div class="camera-info" id="cameraInfo">Camera idle</div>
-
-          <div class="controls">
-            <button id="btn-permission" class="btn primary">📷 Permission</button>
-            <button id="btn-start" class="btn primary">▶ Scan</button>
-            <button id="btn-stop" class="btn">■ Stop</button>
+          <div class="camera-row">
+            <div class="camera-label" id="cameraLabel">Camera idle</div>
           </div>
 
-          <div class="hint">
-            Tip: Bright light + getting close helps a lot on the R1 (no torch).
-          </div>
-        </section>
-
-        <!-- Result -->
-        <section class="screen" id="screen-result">
-          <div class="card">
-            <div class="label">Scanned</div>
-            <div class="value" id="scannedValue">—</div>
+          <div class="button-grid">
+            <button class="primary" id="btn-start" type="button">Scan</button>
+            <button class="ghost" id="btn-stop" type="button" disabled>Stop</button>
+            <button class="ghost" id="btn-flip" type="button">Flip Camera</button>
+            <button class="ghost" id="btn-rescan" type="button">Scan Again</button>
           </div>
 
-          <div class="controls">
-            <button id="btn-search" class="btn primary">🔎 Lookup CD</button>
-            <button id="btn-add-scanned" class="btn primary">＋ Add to Library</button>
-            <button id="btn-scan-again" class="btn">↩ Scan again</button>
+          <div class="tip">
+            Side button starts scan or adds the selected CD. Long press flips camera. Scroll wheel moves through the library.
           </div>
         </section>
 
-        <!-- Search -->
-        <section class="screen" id="screen-search">
-          <div class="card">
-            <div class="label">Manual Search</div>
-            <input id="manualInput" placeholder="Enter UPC or artist/album" />
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Manual lookup</div>
+              <h2>Barcode</h2>
+            </div>
           </div>
 
-          <div class="controls">
-            <button id="btn-manual-search" class="btn primary">🔎 Search</button>
-            <button id="btn-back" class="btn">↩ Back</button>
+          <div class="manual-row">
+            <input id="manualBarcode" inputmode="numeric" placeholder="UPC or EAN" />
+            <button class="primary small" id="btn-lookup" type="button">Lookup</button>
           </div>
-
-          <div id="results"></div>
         </section>
 
-        <!-- Catalog -->
-        <section class="screen" id="screen-catalog">
-          <div class="catalog-head">
-            <div class="title2">Catalog</div>
-            <button id="btn-clear" class="btn danger">Clear</button>
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Current scan</div>
+              <h2 id="currentBarcode">No barcode scanned yet</h2>
+            </div>
           </div>
-          <div id="catalogList"></div>
+
+          <div class="match-banner tone-idle" id="matchBanner">
+            <div class="banner-title">Scan a barcode to look up a CD.</div>
+            <div class="banner-detail">Matches and ownership checks will appear here.</div>
+          </div>
+
+          <div class="selected-card" id="selectedCard">
+            <div class="empty-card">
+              Use Scan to read a barcode, or type a UPC below for a manual lookup.
+            </div>
+          </div>
+
+          <div class="action-row">
+            <button class="primary wide" id="btn-add" type="button" disabled>Add to Library</button>
+          </div>
+
+          <div class="section-subhead">Release choices</div>
+          <div class="choice-list" id="releaseChoices">
+            <div class="empty-card compact">No release choices yet.</div>
+          </div>
+        </section>
+
+        <section class="panel library-panel">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Stored on device</div>
+              <h2>Library</h2>
+            </div>
+            <div class="count-pill" id="libraryCount">0</div>
+          </div>
+
+          <div class="library-list" id="libraryList">
+            <div class="empty-card">
+              Your library is empty. Scan a CD and add it here.
+            </div>
+          </div>
+
+          <div class="action-row">
+            <button class="ghost danger wide" id="btn-clear" type="button">Clear Library</button>
+          </div>
         </section>
       </main>
-
-      <footer>
-        <button class="tab active" id="tab-scan">Scan</button>
-        <button class="tab" id="tab-search">Search</button>
-        <button class="tab" id="tab-catalog">Catalog</button>
-      </footer>
     </div>
 
     <script src="./app.js"></script>
