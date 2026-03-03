@@ -35,16 +35,17 @@ const catalogListEl = document.getElementById("catalogList");
 const btnClear = document.getElementById("btn-clear");
 
 const STORAGE_KEY = "cd_catalog_simple_v1";
-const CAMERA_KEY = "cd_catalog_camera_device_id_v2";
 
 let activeScreen = "scan";
 let lastScanned = "";
 let scanning = false;
 
-let codeReader = null;
-let selectedDeviceId = localStorage.getItem(CAMERA_KEY) || null;
+let stream = null;
+let rafId = null;
 
-// ---------- helpers ----------
+// ZXing fallback (stream-based)
+let zxingReader = null;
+
 function setStatus(text) {
   statusEl.textContent = text;
 }
@@ -82,17 +83,14 @@ function getErrorMessage(e) {
   return e.message || e.name || JSON.stringify(e);
 }
 
-// ---------- permission ----------
 async function requestPermission() {
-  // Do NOT close/open inside scan; this is just to trigger prompt + labels
   try {
     setStatus("Requesting camera permission…");
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const s = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: "environment" } },
       audio: false,
     });
-    // stop immediately (we just wanted permission)
-    stream.getTracks().forEach((t) => t.stop());
+    s.getTracks().forEach((t) => t.stop());
     setStatus("Camera permission granted");
   } catch (e) {
     setStatus("Permission failed: " + getErrorMessage(e));
@@ -100,124 +98,61 @@ async function requestPermission() {
   }
 }
 
-// ---------- camera picking (fallback path) ----------
-function scoreLabel(label) {
-  const l = (label || "").toLowerCase();
-  let s = 0;
-  if (l.includes("back")) s += 50;
-  if (l.includes("rear")) s += 50;
-  if (l.includes("environment")) s += 50;
-  if (l.includes("front")) s -= 40;
-  if (l.includes("user")) s -= 40;
-  if (l.includes("self")) s -= 40;
-  return s;
-}
+async function openRearCameraStream() {
+  // IMPORTANT: we do NOT enumerate devices on Rabbit
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 640 },
+      height: { ideal: 480 },
+    },
+    audio: false,
+  });
 
-async function pickBestDeviceId() {
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const cams = devices.filter((d) => d.kind === "videoinput");
-  if (!cams.length) return null;
-
-  // prefer stored
-  if (selectedDeviceId && cams.some((c) => c.deviceId === selectedDeviceId)) {
-    return selectedDeviceId;
+  videoEl.srcObject = stream;
+  // On some WebViews you must call play() after user gesture
+  try {
+    await videoEl.play();
+  } catch {
+    // ignore
   }
-
-  const sorted = cams
-    .map((c) => ({ ...c, _score: scoreLabel(c.label) }))
-    .sort((a, b) => b._score - a._score);
-
-  return (sorted[0] || cams[cams.length - 1]).deviceId;
 }
 
-// ---------- scanner ----------
-function ensureReader() {
-  if (!codeReader) codeReader = new ZXing.BrowserMultiFormatReader();
+function closeStream() {
+  try {
+    if (videoEl.srcObject && videoEl.srcObject.getTracks) {
+      videoEl.srcObject.getTracks().forEach((t) => t.stop());
+    }
+  } catch {}
+  videoEl.srcObject = null;
+
+  try {
+    if (stream && stream.getTracks) stream.getTracks().forEach((t) => t.stop());
+  } catch {}
+  stream = null;
 }
 
 async function startScan() {
   if (scanning) return;
-
   scanning = true;
   btnStart.disabled = true;
 
   try {
-    ensureReader();
+    setStatus("Opening rear camera…");
+    await openRearCameraStream();
 
-    setStatus("Starting rear camera…");
-
-    // IMPORTANT: try constraints FIRST (works best on Rabbit / weird deviceId lists)
-    // This avoids the “front flashes then shuts off” issue.
-    const constraints = {
-      audio: false,
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 640 },
-        height: { ideal: 480 },
-      },
-    };
-
-    await codeReader.decodeFromConstraints(
-      constraints,
-      videoEl,
-      (result, err) => {
-        if (!scanning) return;
-
-        if (result) {
-          const text = result.getText();
-          lastScanned = text;
-          scannedValueEl.textContent = text;
-          setStatus("Scanned!");
-          stopScan().catch(() => {});
-          showScreen("result");
-        }
-        // ignore err while scanning
-      }
-    );
-
-    // Note: the promise resolves when reset/stop is called.
-    setStatus("Scanning…");
-    return;
-  } catch (e1) {
-    // If constraints path fails, fallback to deviceId
-    setStatus("Rear constraint failed, trying deviceId…");
-
-    try {
-      ensureReader();
-
-      selectedDeviceId = await pickBestDeviceId();
-      if (!selectedDeviceId) throw new Error("No camera devices found");
-
-      localStorage.setItem(CAMERA_KEY, selectedDeviceId);
-
-      await codeReader.decodeFromVideoDevice(
-        selectedDeviceId,
-        videoEl,
-        (result, err) => {
-          if (!scanning) return;
-
-          if (result) {
-            const text = result.getText();
-            lastScanned = text;
-            scannedValueEl.textContent = text;
-            setStatus("Scanned!");
-            stopScan().catch(() => {});
-            showScreen("result");
-          }
-        }
-      );
-
-      setStatus("Scanning…");
-      return;
-    } catch (e2) {
-      scanning = false;
-      const msg = `Scan failed: ${getErrorMessage(e2)}`;
-      setStatus(msg);
-      alert(
-        msg +
-          "\n\nIf it says camera blocked: fully close the Rabbit app and reopen.\nIf it uses the wrong camera: hit Permission again, then Scan."
-      );
+    // Prefer native BarcodeDetector if available (often best on embedded Chromium)
+    if ("BarcodeDetector" in window) {
+      setStatus("Scanning (BarcodeDetector)…");
+      await scanWithBarcodeDetector();
+    } else {
+      setStatus("Scanning (ZXing fallback)…");
+      await scanWithZXingFromVideo();
     }
+  } catch (e) {
+    scanning = false;
+    setStatus("Scan failed: " + getErrorMessage(e));
+    alert("Scan failed:\n\n" + getErrorMessage(e));
   } finally {
     btnStart.disabled = false;
   }
@@ -226,20 +161,105 @@ async function startScan() {
 async function stopScan() {
   scanning = false;
 
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+
+  // stop ZXing if used
   try {
-    if (codeReader) codeReader.reset();
+    if (zxingReader) zxingReader.reset();
   } catch {}
 
-  try {
-    const stream = videoEl.srcObject;
-    if (stream && stream.getTracks) stream.getTracks().forEach((t) => t.stop());
-    videoEl.srcObject = null;
-  } catch {}
-
+  closeStream();
   setStatus("Stopped");
 }
 
-// ---------- Catalog ----------
+async function scanWithBarcodeDetector() {
+  // Try common barcode formats; if unsupported, detector will still often work.
+  let detector;
+  try {
+    detector = new BarcodeDetector({
+      formats: [
+        "ean_13",
+        "ean_8",
+        "upc_a",
+        "upc_e",
+        "code_128",
+        "code_39",
+        "itf",
+        "qr_code",
+      ],
+    });
+  } catch {
+    detector = new BarcodeDetector();
+  }
+
+  // Use ImageCapture for best compatibility; fallback to canvas draw if needed
+  const track = stream.getVideoTracks()[0];
+  const imageCapture = track ? new ImageCapture(track) : null;
+
+  async function tick() {
+    if (!scanning) return;
+
+    try {
+      let bitmap = null;
+
+      if (imageCapture && imageCapture.grabFrame) {
+        bitmap = await imageCapture.grabFrame();
+        const codes = await detector.detect(bitmap);
+        if (codes && codes.length) {
+          onDetected(codes[0].rawValue || codes[0].value || "");
+          return;
+        }
+      } else {
+        // Canvas fallback (less ideal)
+        const canvas = document.createElement("canvas");
+        canvas.width = videoEl.videoWidth || 640;
+        canvas.height = videoEl.videoHeight || 480;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+        const img = await createImageBitmap(canvas);
+        const codes = await detector.detect(img);
+        if (codes && codes.length) {
+          onDetected(codes[0].rawValue || codes[0].value || "");
+          return;
+        }
+      }
+    } catch {
+      // ignore scan errors per-frame
+    }
+
+    rafId = requestAnimationFrame(tick);
+  }
+
+  rafId = requestAnimationFrame(tick);
+}
+
+async function scanWithZXingFromVideo() {
+  if (!zxingReader) zxingReader = new ZXing.BrowserMultiFormatReader();
+
+  // ZXing has a mode that reads directly from an existing <video> element
+  // (no device enumeration). This is what we want for Rabbit.
+  zxingReader.decodeFromVideoElementContinuously(videoEl, (result, err) => {
+    if (!scanning) return;
+    if (result) {
+      onDetected(result.getText());
+    }
+    // ignore err
+  });
+}
+
+function onDetected(text) {
+  if (!text) return;
+  lastScanned = text;
+  scannedValueEl.textContent = text;
+  setStatus("Scanned!");
+  stopScan().catch(() => {});
+  showScreen("result");
+}
+
+// ---- Catalog storage ----
 function getCatalog() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -284,15 +304,13 @@ function renderCatalog() {
     div.className = "catalog-item";
     div.innerHTML = `
       <div class="result-title">${escapeHtml(it.title)}</div>
-      <div class="result-sub">${escapeHtml(it.artist)} ${
-      it.year ? `• ${escapeHtml(it.year)}` : ""
-    }</div>
+      <div class="result-sub">${escapeHtml(it.artist)} ${it.year ? `• ${escapeHtml(it.year)}` : ""}</div>
     `;
     catalogListEl.appendChild(div);
   });
 }
 
-// ---------- Search (placeholder) ----------
+// ---- Search (placeholder) ----
 async function search(query) {
   const q = String(query || "").trim();
   if (!q) return [];
@@ -325,9 +343,7 @@ function renderResults(items) {
     row.innerHTML = `
       <div>
         <div class="result-title">${escapeHtml(it.title)}</div>
-        <div class="result-sub">${escapeHtml(it.artist)} ${
-      it.year ? `• ${escapeHtml(it.year)}` : ""
-    }</div>
+        <div class="result-sub">${escapeHtml(it.artist)} ${it.year ? `• ${escapeHtml(it.year)}` : ""}</div>
       </div>
       <button class="btn primary small">Add</button>
     `;
@@ -340,7 +356,7 @@ function renderResults(items) {
   });
 }
 
-// ---------- UI wiring ----------
+// ---- UI wiring ----
 tabs.scan.addEventListener("click", () => showScreen("scan"));
 tabs.search.addEventListener("click", () => showScreen("search"));
 tabs.catalog.addEventListener("click", () => showScreen("catalog"));
