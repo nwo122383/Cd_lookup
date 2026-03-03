@@ -17,83 +17,71 @@
     <div id="app">
       <header>
         <div class="title">CD Catalog</div>
-        <div class="status" id="statusPill">Ready</div>
+        <div class="status" id="status">Idle</div>
       </header>
 
+      <!-- SCREENS -->
       <main>
-        <section class="card">
-          <div class="row">
-            <button id="btnStartScan" class="primary">Camera</button>
-            <button id="btnSnap" class="secondary" disabled>Snap</button>
-            <button id="btnStopScan" class="ghost" disabled>Stop</button>
+        <!-- Scan -->
+        <section class="screen active" id="screen-scan">
+          <div class="preview-wrap">
+            <video id="video" muted playsinline></video>
           </div>
 
-          <div class="videoWrap">
-            <video id="video" playsinline muted></video>
-            <div class="overlay" id="scanOverlay">
-              Fill frame with barcode • tap Snap
-            </div>
+          <div class="controls">
+            <button id="btn-permission" class="btn primary">📷 Permission</button>
+            <button id="btn-start" class="btn primary">▶ Scan</button>
+            <button id="btn-stop" class="btn">■ Stop</button>
           </div>
 
-          <div class="row">
-            <input
-              id="manualBarcode"
-              class="input"
-              placeholder="Or type barcode"
-              inputmode="numeric"
-              autocomplete="off"
-            />
-            <button id="btnLookup" class="secondary">Lookup</button>
+          <div class="hint">
+            Tip: Bright light + filling the frame helps a lot on the R1 (no torch).
           </div>
-
-          <div class="result" id="resultBox">
-            <div class="resultTop">
-              <div class="badge" id="haveBadge">—</div>
-              <div class="barcode" id="barcodeText">No code yet</div>
-            </div>
-
-            <div class="meta">
-              <div class="metaLine" id="metaTitle">—</div>
-              <div class="metaLine dim" id="metaArtist">—</div>
-              <div class="metaLine dim" id="metaYear">—</div>
-            </div>
-
-            <div class="row">
-              <button id="btnAdd" class="primary" disabled>Add</button>
-              <button id="btnRemove" class="danger" disabled>Remove</button>
-            </div>
-          </div>
-
-          <!-- hidden canvas for snapshot decoding -->
-          <canvas id="snapCanvas" width="640" height="480" style="display:none;"></canvas>
         </section>
 
-        <section class="card">
-          <div class="row">
-            <button id="btnLibrary" class="secondary">Library</button>
-            <button id="btnBack" class="ghost" style="display:none;">Back</button>
+        <!-- Result -->
+        <section class="screen" id="screen-result">
+          <div class="card">
+            <div class="label">Scanned</div>
+            <div class="value" id="scannedValue">—</div>
           </div>
 
-          <div id="libraryView" style="display:none;">
-            <div class="libraryHeader">
-              <div class="small" id="libraryCount">0 items</div>
-              <div class="row">
-                <button id="btnExport" class="ghost">Export</button>
-                <label class="ghost fileLabel">
-                  Import
-                  <input id="fileImport" type="file" accept="application/json" />
-                </label>
-              </div>
-            </div>
-            <div id="libraryList" class="libraryList"></div>
+          <div class="controls">
+            <button id="btn-search" class="btn primary">🔎 Search</button>
+            <button id="btn-scan-again" class="btn">↩ Scan again</button>
           </div>
+        </section>
+
+        <!-- Search -->
+        <section class="screen" id="screen-search">
+          <div class="card">
+            <div class="label">Manual Search</div>
+            <input id="manualInput" placeholder="Enter UPC or artist/album" />
+          </div>
+
+          <div class="controls">
+            <button id="btn-manual-search" class="btn primary">🔎 Search</button>
+            <button id="btn-back" class="btn">↩ Back</button>
+          </div>
+
+          <div id="results"></div>
+        </section>
+
+        <!-- Catalog -->
+        <section class="screen" id="screen-catalog">
+          <div class="catalog-head">
+            <div class="title2">Catalog</div>
+            <button id="btn-clear" class="btn danger">Clear</button>
+          </div>
+          <div id="catalogList"></div>
         </section>
       </main>
 
+      <!-- TABS -->
       <footer>
-        <div class="hint">
-          Best results: bright light + barcode close + tap Snap
-        </div>
+        <button class="tab active" id="tab-scan">Scan</button>
+        <button class="tab" id="tab-search">Search</button>
+        <button class="tab" id="tab-catalog">Catalog</button>
       </footer>
     </div>
 
