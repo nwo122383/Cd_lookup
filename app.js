@@ -35,7 +35,7 @@ const catalogListEl = document.getElementById("catalogList");
 const btnClear = document.getElementById("btn-clear");
 
 const STORAGE_KEY = "cd_catalog_simple_v1";
-const CAMERA_KEY = "cd_catalog_camera_device_id_v1";
+const CAMERA_KEY = "cd_catalog_camera_device_id_v2";
 
 let activeScreen = "scan";
 let lastScanned = "";
@@ -44,13 +44,12 @@ let scanning = false;
 let codeReader = null;
 let selectedDeviceId = localStorage.getItem(CAMERA_KEY) || null;
 
-// ---- UI helpers ----
+// ---------- helpers ----------
 function setStatus(text) {
   statusEl.textContent = text;
 }
 
 function showScreen(name) {
-  // Stop camera/scanner whenever leaving Scan screen
   if (activeScreen === "scan" && name !== "scan") {
     stopScan().catch(() => {});
   }
@@ -77,106 +76,89 @@ function escapeHtml(s) {
     .replaceAll("'", "&#039;");
 }
 
-// ---- Camera selection ----
-function scoreCameraLabel(label) {
-  const l = (label || "").toLowerCase();
-
-  // Hard prefer rear/back/environment
-  let score = 0;
-  if (l.includes("back")) score += 50;
-  if (l.includes("rear")) score += 50;
-  if (l.includes("environment")) score += 50;
-
-  // Penalize front/user/selfie
-  if (l.includes("front")) score -= 40;
-  if (l.includes("user")) score -= 40;
-  if (l.includes("self")) score -= 40;
-
-  // Some devices label "camera 0/1" — leave score low but not negative
-  return score;
+function getErrorMessage(e) {
+  if (!e) return "Unknown error";
+  if (typeof e === "string") return e;
+  return e.message || e.name || JSON.stringify(e);
 }
 
-async function requestPermissionEnvironment() {
-  // This does two things:
-  // 1) prompts permission
-  // 2) enables device labels in enumerateDevices()
-  setStatus("Requesting camera…");
-
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: {
-      facingMode: { ideal: "environment" },
-      width: { ideal: 640 },
-      height: { ideal: 480 },
-    },
-    audio: false,
-  });
-
-  // Attach to video so we can confirm it’s actually live
-  videoEl.srcObject = stream;
+// ---------- permission ----------
+async function requestPermission() {
+  // Do NOT close/open inside scan; this is just to trigger prompt + labels
   try {
-    await videoEl.play();
-  } catch {
-    // ignore; some webviews still show video without play()
+    setStatus("Requesting camera permission…");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" } },
+      audio: false,
+    });
+    // stop immediately (we just wanted permission)
+    stream.getTracks().forEach((t) => t.stop());
+    setStatus("Camera permission granted");
+  } catch (e) {
+    setStatus("Permission failed: " + getErrorMessage(e));
+    throw e;
   }
-
-  // Leave it running briefly so labels populate reliably
-  await new Promise((r) => setTimeout(r, 250));
-
-  // Stop stream right away; scanning will open its own stream
-  stream.getTracks().forEach((t) => t.stop());
-  videoEl.srcObject = null;
-
-  setStatus("Camera permission granted");
 }
 
-async function pickBestCameraId() {
+// ---------- camera picking (fallback path) ----------
+function scoreLabel(label) {
+  const l = (label || "").toLowerCase();
+  let s = 0;
+  if (l.includes("back")) s += 50;
+  if (l.includes("rear")) s += 50;
+  if (l.includes("environment")) s += 50;
+  if (l.includes("front")) s -= 40;
+  if (l.includes("user")) s -= 40;
+  if (l.includes("self")) s -= 40;
+  return s;
+}
+
+async function pickBestDeviceId() {
   const devices = await navigator.mediaDevices.enumerateDevices();
   const cams = devices.filter((d) => d.kind === "videoinput");
   if (!cams.length) return null;
 
-  // If we already have one stored, prefer it if it still exists
+  // prefer stored
   if (selectedDeviceId && cams.some((c) => c.deviceId === selectedDeviceId)) {
     return selectedDeviceId;
   }
 
-  // Score by label
   const sorted = cams
-    .map((c) => ({ ...c, _score: scoreCameraLabel(c.label) }))
+    .map((c) => ({ ...c, _score: scoreLabel(c.label) }))
     .sort((a, b) => b._score - a._score);
 
-  // Best-scoring (rear) first; otherwise fallback to last camera
-  const chosen = sorted[0]?._score > -999 ? sorted[0] : cams[cams.length - 1];
-  return chosen.deviceId;
+  return (sorted[0] || cams[cams.length - 1]).deviceId;
 }
 
-// ---- Scanner ----
+// ---------- scanner ----------
+function ensureReader() {
+  if (!codeReader) codeReader = new ZXing.BrowserMultiFormatReader();
+}
+
 async function startScan() {
   if (scanning) return;
 
+  scanning = true;
+  btnStart.disabled = true;
+
   try {
-    setStatus("Starting…");
-    btnStart.disabled = true;
+    ensureReader();
 
-    // Ensure permission + labels
-    await requestPermissionEnvironment();
+    setStatus("Starting rear camera…");
 
-    // Pick rear camera
-    selectedDeviceId = await pickBestCameraId();
-    if (!selectedDeviceId) throw new Error("No camera device found.");
+    // IMPORTANT: try constraints FIRST (works best on Rabbit / weird deviceId lists)
+    // This avoids the “front flashes then shuts off” issue.
+    const constraints = {
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 640 },
+        height: { ideal: 480 },
+      },
+    };
 
-    localStorage.setItem(CAMERA_KEY, selectedDeviceId);
-
-    if (!codeReader) {
-      codeReader = new ZXing.BrowserMultiFormatReader();
-    }
-
-    scanning = true;
-    setStatus("Scanning…");
-
-    // IMPORTANT: decodeFromVideoDevice will open the stream itself.
-    // Using the selectedDeviceId (rear) prevents the “front then flip” behavior.
-    await codeReader.decodeFromVideoDevice(
-      selectedDeviceId,
+    await codeReader.decodeFromConstraints(
+      constraints,
       videoEl,
       (result, err) => {
         if (!scanning) return;
@@ -189,15 +171,53 @@ async function startScan() {
           stopScan().catch(() => {});
           showScreen("result");
         }
-        // ignore err; it happens constantly while scanning
+        // ignore err while scanning
       }
     );
-  } catch (e) {
-    scanning = false;
-    setStatus("Camera failed");
-    alert(
-      `Could not start camera/scanner:\n\n${e?.message || e}\n\nIf it says camera blocked, fully close the app and reopen it.`
-    );
+
+    // Note: the promise resolves when reset/stop is called.
+    setStatus("Scanning…");
+    return;
+  } catch (e1) {
+    // If constraints path fails, fallback to deviceId
+    setStatus("Rear constraint failed, trying deviceId…");
+
+    try {
+      ensureReader();
+
+      selectedDeviceId = await pickBestDeviceId();
+      if (!selectedDeviceId) throw new Error("No camera devices found");
+
+      localStorage.setItem(CAMERA_KEY, selectedDeviceId);
+
+      await codeReader.decodeFromVideoDevice(
+        selectedDeviceId,
+        videoEl,
+        (result, err) => {
+          if (!scanning) return;
+
+          if (result) {
+            const text = result.getText();
+            lastScanned = text;
+            scannedValueEl.textContent = text;
+            setStatus("Scanned!");
+            stopScan().catch(() => {});
+            showScreen("result");
+          }
+        }
+      );
+
+      setStatus("Scanning…");
+      return;
+    } catch (e2) {
+      scanning = false;
+      const msg = `Scan failed: ${getErrorMessage(e2)}`;
+      setStatus(msg);
+      alert(
+        msg +
+          "\n\nIf it says camera blocked: fully close the Rabbit app and reopen.\nIf it uses the wrong camera: hit Permission again, then Scan."
+      );
+    }
   } finally {
     btnStart.disabled = false;
   }
@@ -210,7 +230,6 @@ async function stopScan() {
     if (codeReader) codeReader.reset();
   } catch {}
 
-  // Belt + suspenders: stop any tracks attached to video
   try {
     const stream = videoEl.srcObject;
     if (stream && stream.getTracks) stream.getTracks().forEach((t) => t.stop());
@@ -220,7 +239,7 @@ async function stopScan() {
   setStatus("Stopped");
 }
 
-// ---- Catalog storage ----
+// ---------- Catalog ----------
 function getCatalog() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -265,13 +284,15 @@ function renderCatalog() {
     div.className = "catalog-item";
     div.innerHTML = `
       <div class="result-title">${escapeHtml(it.title)}</div>
-      <div class="result-sub">${escapeHtml(it.artist)} ${it.year ? `• ${escapeHtml(it.year)}` : ""}</div>
+      <div class="result-sub">${escapeHtml(it.artist)} ${
+      it.year ? `• ${escapeHtml(it.year)}` : ""
+    }</div>
     `;
     catalogListEl.appendChild(div);
   });
 }
 
-// ---- Search (placeholder) ----
+// ---------- Search (placeholder) ----------
 async function search(query) {
   const q = String(query || "").trim();
   if (!q) return [];
@@ -304,7 +325,9 @@ function renderResults(items) {
     row.innerHTML = `
       <div>
         <div class="result-title">${escapeHtml(it.title)}</div>
-        <div class="result-sub">${escapeHtml(it.artist)} ${it.year ? `• ${escapeHtml(it.year)}` : ""}</div>
+        <div class="result-sub">${escapeHtml(it.artist)} ${
+      it.year ? `• ${escapeHtml(it.year)}` : ""
+    }</div>
       </div>
       <button class="btn primary small">Add</button>
     `;
@@ -317,17 +340,16 @@ function renderResults(items) {
   });
 }
 
-// ---- Wire up UI ----
+// ---------- UI wiring ----------
 tabs.scan.addEventListener("click", () => showScreen("scan"));
 tabs.search.addEventListener("click", () => showScreen("search"));
 tabs.catalog.addEventListener("click", () => showScreen("catalog"));
 
 btnPermission.addEventListener("click", async () => {
   try {
-    await requestPermissionEnvironment();
+    await requestPermission();
   } catch (e) {
-    setStatus("Permission failed");
-    alert(`Permission failed: ${e?.message || e}`);
+    alert("Permission failed: " + getErrorMessage(e));
   }
 });
 
@@ -351,8 +373,8 @@ btnManualSearch.addEventListener("click", async () => {
     renderResults(items);
     setStatus(`Found ${items.length}`);
   } catch (e) {
-    setStatus("Search failed");
-    alert(`Search failed: ${e?.message || e}`);
+    setStatus("Search failed: " + getErrorMessage(e));
+    alert("Search failed: " + getErrorMessage(e));
   }
 });
 
