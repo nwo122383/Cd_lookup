@@ -16,6 +16,7 @@ const tabs = {
 };
 
 const videoEl = document.getElementById("video");
+const cameraInfoEl = document.getElementById("cameraInfo");
 
 const btnPermission = document.getElementById("btn-permission");
 const btnStart = document.getElementById("btn-start");
@@ -23,6 +24,7 @@ const btnStop = document.getElementById("btn-stop");
 
 const scannedValueEl = document.getElementById("scannedValue");
 const btnSearch = document.getElementById("btn-search");
+const btnAddScanned = document.getElementById("btn-add-scanned");
 const btnScanAgain = document.getElementById("btn-scan-again");
 
 const manualInput = document.getElementById("manualInput");
@@ -35,6 +37,8 @@ const catalogListEl = document.getElementById("catalogList");
 const btnClear = document.getElementById("btn-clear");
 
 const STORAGE_KEY = "cd_catalog_simple_v1";
+const REAR_CAMERA_LABEL_RE = /(back|rear|environment|world|outward|main)/i;
+const FRONT_CAMERA_LABEL_RE = /(front|user|selfie|face|inward)/i;
 
 let activeScreen = "scan";
 let lastScanned = "";
@@ -45,9 +49,15 @@ let rafId = null;
 
 // ZXing fallback (stream-based)
 let zxingReader = null;
+let activeCameraSummary = "Camera idle";
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function setCameraInfo(text) {
+  activeCameraSummary = text;
+  cameraInfoEl.textContent = text;
 }
 
 function showScreen(name) {
@@ -83,31 +93,206 @@ function getErrorMessage(e) {
   return e.message || e.name || JSON.stringify(e);
 }
 
+function stopMediaStream(mediaStream) {
+  try {
+    if (mediaStream && mediaStream.getTracks) {
+      mediaStream.getTracks().forEach((track) => track.stop());
+    }
+  } catch {}
+}
+
+function normalizeBarcode(text) {
+  return String(text || "").replace(/[^\d]/g, "");
+}
+
+function isBarcodeValue(text) {
+  return /^\d{8,14}$/.test(normalizeBarcode(text));
+}
+
+function getTrackSummary(track, fallbackLabel = "") {
+  const settings = track?.getSettings ? track.getSettings() : {};
+  return {
+    label: track?.label || fallbackLabel || "Unnamed camera",
+    facingMode: settings?.facingMode || "",
+    deviceId: settings?.deviceId || "",
+  };
+}
+
+function isLikelyRearCamera(summary) {
+  return (
+    summary.facingMode === "environment" ||
+    REAR_CAMERA_LABEL_RE.test(summary.label || "")
+  );
+}
+
+function isLikelyFrontCamera(summary) {
+  return (
+    summary.facingMode === "user" ||
+    FRONT_CAMERA_LABEL_RE.test(summary.label || "")
+  );
+}
+
+function formatCameraSummary(summary) {
+  const parts = [];
+
+  if (summary?.label) parts.push(summary.label);
+  if (summary?.facingMode) parts.push(`mode: ${summary.facingMode}`);
+
+  return parts.length ? `Camera: ${parts.join(" • ")}` : "Camera opened";
+}
+
+async function listVideoInputs() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices.filter((device) => device.kind === "videoinput");
+  } catch {
+    return [];
+  }
+}
+
+function pickPreferredVideoInput(devices) {
+  if (!devices.length) return null;
+
+  const rearDevice = devices.find((device) =>
+    REAR_CAMERA_LABEL_RE.test(device.label || ""),
+  );
+  if (rearDevice) return rearDevice;
+
+  const nonFrontDevice = devices.find(
+    (device) => !FRONT_CAMERA_LABEL_RE.test(device.label || ""),
+  );
+  return nonFrontDevice || devices[0];
+}
+
+function buildCameraAttempts(preferredDeviceId) {
+  const baseVideo = {
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+  };
+
+  return [
+    {
+      label: "rear facing camera",
+      constraints: {
+        video: { ...baseVideo, facingMode: { exact: "environment" } },
+        audio: false,
+      },
+    },
+    preferredDeviceId
+      ? {
+          label: "preferred rear camera device",
+          constraints: {
+            video: { ...baseVideo, deviceId: { exact: preferredDeviceId } },
+            audio: false,
+          },
+        }
+      : null,
+    {
+      label: "camera with environment preference",
+      constraints: {
+        video: { ...baseVideo, facingMode: { ideal: "environment" } },
+        audio: false,
+      },
+    },
+    {
+      label: "default camera",
+      constraints: {
+        video: baseVideo,
+        audio: false,
+      },
+    },
+  ].filter(Boolean);
+}
+
+async function tryApplyRearFacing(track) {
+  const capabilities = track?.getCapabilities ? track.getCapabilities() : null;
+  const facingModes = Array.isArray(capabilities?.facingMode)
+    ? capabilities.facingMode
+    : [];
+
+  if (!facingModes.includes("environment")) return;
+
+  try {
+    await track.applyConstraints({ facingMode: { exact: "environment" } });
+  } catch {
+    try {
+      await track.applyConstraints({ facingMode: "environment" });
+    } catch {}
+  }
+}
+
+async function acquireRearCameraStream() {
+  const devices = await listVideoInputs();
+  const preferredDevice = pickPreferredVideoInput(devices);
+  const attempts = buildCameraAttempts(preferredDevice?.deviceId || "");
+  let lastError = null;
+
+  for (const attempt of attempts) {
+    let candidateStream = null;
+
+    try {
+      candidateStream = await navigator.mediaDevices.getUserMedia(
+        attempt.constraints,
+      );
+
+      const track = candidateStream.getVideoTracks()[0];
+      if (!track) {
+        throw new Error("No video track returned");
+      }
+
+      await tryApplyRearFacing(track);
+
+      const summary = getTrackSummary(track, attempt.label);
+      const ambiguousButAcceptable =
+        devices.length <= 1 && !isLikelyFrontCamera(summary);
+
+      if (
+        isLikelyFrontCamera(summary) &&
+        !isLikelyRearCamera(summary) &&
+        devices.length > 1
+      ) {
+        throw new Error(`Opened front-facing camera: ${summary.label}`);
+      }
+
+      if (isLikelyRearCamera(summary) || ambiguousButAcceptable) {
+        return { stream: candidateStream, summary };
+      }
+
+      if (devices.length <= 1) {
+        return { stream: candidateStream, summary };
+      }
+
+      throw new Error(`Camera orientation ambiguous: ${summary.label}`);
+    } catch (error) {
+      lastError = error;
+      stopMediaStream(candidateStream);
+    }
+  }
+
+  throw lastError || new Error("Unable to open the camera");
+}
+
 async function requestPermission() {
+  let permissionStream = null;
+
   try {
     setStatus("Requesting camera permission…");
-    const s = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" } },
-      audio: false,
-    });
-    s.getTracks().forEach((t) => t.stop());
+    const acquired = await acquireRearCameraStream();
+    permissionStream = acquired.stream;
+    setCameraInfo(formatCameraSummary(acquired.summary));
     setStatus("Camera permission granted");
   } catch (e) {
     setStatus("Permission failed: " + getErrorMessage(e));
     throw e;
+  } finally {
+    stopMediaStream(permissionStream);
   }
 }
 
 async function openRearCameraStream() {
-  // IMPORTANT: we do NOT enumerate devices on Rabbit
-  stream = await navigator.mediaDevices.getUserMedia({
-    video: {
-      facingMode: { ideal: "environment" },
-      width: { ideal: 640 },
-      height: { ideal: 480 },
-    },
-    audio: false,
-  });
+  const acquired = await acquireRearCameraStream();
+  stream = acquired.stream;
+  setCameraInfo(formatCameraSummary(acquired.summary));
 
   videoEl.srcObject = stream;
   // On some WebViews you must call play() after user gesture
@@ -119,16 +304,9 @@ async function openRearCameraStream() {
 }
 
 function closeStream() {
-  try {
-    if (videoEl.srcObject && videoEl.srcObject.getTracks) {
-      videoEl.srcObject.getTracks().forEach((t) => t.stop());
-    }
-  } catch {}
+  stopMediaStream(videoEl.srcObject);
   videoEl.srcObject = null;
-
-  try {
-    if (stream && stream.getTracks) stream.getTracks().forEach((t) => t.stop());
-  } catch {}
+  stopMediaStream(stream);
   stream = null;
 }
 
@@ -260,6 +438,14 @@ function onDetected(text) {
 }
 
 // ---- Catalog storage ----
+function makeCatalogId(item) {
+  return (
+    item.id ||
+    item.barcode ||
+    `${item.title}|${item.artist}|${item.year || ""}|${item.format || ""}`
+  );
+}
+
 function getCatalog() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -276,7 +462,7 @@ function saveCatalog(list) {
 
 function addToCatalog(item) {
   const list = getCatalog();
-  const id = item.id || `${item.title}|${item.artist}|${item.year || ""}`;
+  const id = makeCatalogId(item);
 
   if (!list.some((x) => x._id === id)) {
     list.unshift({ ...item, _id: id, addedAt: Date.now() });
@@ -305,32 +491,54 @@ function renderCatalog() {
     div.innerHTML = `
       <div class="result-title">${escapeHtml(it.title)}</div>
       <div class="result-sub">${escapeHtml(it.artist)} ${it.year ? `• ${escapeHtml(it.year)}` : ""}</div>
+      <div class="result-meta">${it.barcode ? `Barcode ${escapeHtml(it.barcode)}` : "Saved locally on this device"}</div>
     `;
     catalogListEl.appendChild(div);
   });
 }
 
-// ---- Search (placeholder) ----
+function mapMusicBrainzRelease(release) {
+  const artist = Array.isArray(release?.["artist-credit"])
+    ? release["artist-credit"]
+        .map((part) => part.name || part.artist?.name || "")
+        .join("")
+    : "Unknown Artist";
+  const media = Array.isArray(release?.media) ? release.media[0] : null;
+
+  return {
+    title: release?.title || "Unknown Title",
+    artist,
+    year: release?.date ? String(release.date).slice(0, 4) : "",
+    id: release?.id || "",
+    barcode: release?.barcode || "",
+    format: media?.format || "",
+    country: release?.country || "",
+  };
+}
+
+// ---- Search ----
 async function search(query) {
   const q = String(query || "").trim();
   if (!q) return [];
 
-  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}`;
-  const resp = await fetch(url);
+  const barcode = normalizeBarcode(q);
+  const searchTerm = isBarcodeValue(barcode) ? `barcode:${barcode}` : q;
+  const url = `https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(searchTerm)}&fmt=json&limit=10`;
+  const resp = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+    },
+  });
   if (!resp.ok) throw new Error(`Search failed (${resp.status})`);
   const data = await resp.json();
 
-  const docs = Array.isArray(data?.docs) ? data.docs.slice(0, 10) : [];
-  return docs.map((d) => ({
-    title: d.title || "Unknown Title",
-    artist: (d.author_name && d.author_name[0]) || "Unknown Artist",
-    year: d.first_publish_year || "",
-    id: d.key || "",
-  }));
+  const releases = Array.isArray(data?.releases) ? data.releases.slice(0, 10) : [];
+  return releases.map(mapMusicBrainzRelease);
 }
 
 function renderResults(items) {
   resultsEl.innerHTML = "";
+  const catalog = getCatalog();
 
   if (!items.length) {
     resultsEl.innerHTML = `<div class="card"><div class="label">No results.</div></div>`;
@@ -338,14 +546,16 @@ function renderResults(items) {
   }
 
   items.forEach((it) => {
+    const alreadySaved = catalog.some((entry) => entry._id === makeCatalogId(it));
     const row = document.createElement("div");
     row.className = "result-item";
     row.innerHTML = `
       <div>
         <div class="result-title">${escapeHtml(it.title)}</div>
         <div class="result-sub">${escapeHtml(it.artist)} ${it.year ? `• ${escapeHtml(it.year)}` : ""}</div>
+        <div class="result-meta">${[it.format, it.country, it.barcode].filter(Boolean).map(escapeHtml).join(" • ") || "MusicBrainz release"}</div>
       </div>
-      <button class="btn primary small">Add</button>
+      <button class="btn primary small"${alreadySaved ? " disabled" : ""}>${alreadySaved ? "Added" : "Add"}</button>
     `;
     row.querySelector("button").addEventListener("click", () => {
       addToCatalog(it);
@@ -354,6 +564,33 @@ function renderResults(items) {
     });
     resultsEl.appendChild(row);
   });
+}
+
+async function runSearch(query) {
+  const value = String(query || "").trim();
+  if (!value) return;
+
+  setStatus("Searching…");
+  resultsEl.innerHTML = "";
+  const items = await search(value);
+  renderResults(items);
+  setStatus(`Found ${items.length}`);
+}
+
+function addScannedBarcodeToCatalog() {
+  if (!lastScanned) return;
+
+  const barcode = normalizeBarcode(lastScanned) || lastScanned;
+  addToCatalog({
+    title: `Barcode ${barcode}`,
+    artist: "Unidentified CD",
+    year: "",
+    barcode,
+    id: `barcode:${barcode}`,
+    format: "CD",
+  });
+  setStatus("Saved to library");
+  showScreen("catalog");
 }
 
 // ---- UI wiring ----
@@ -372,22 +609,27 @@ btnPermission.addEventListener("click", async () => {
 btnStart.addEventListener("click", () => startScan());
 btnStop.addEventListener("click", () => stopScan());
 
-btnSearch.addEventListener("click", () => {
-  manualInput.value = lastScanned || "";
+btnSearch.addEventListener("click", async () => {
+  manualInput.value = normalizeBarcode(lastScanned) || lastScanned || "";
   showScreen("search");
   manualInput.focus();
+  if (manualInput.value) {
+    try {
+      await runSearch(manualInput.value);
+    } catch (e) {
+      setStatus("Search failed: " + getErrorMessage(e));
+      alert("Search failed: " + getErrorMessage(e));
+    }
+  }
 });
 
+btnAddScanned.addEventListener("click", () => addScannedBarcodeToCatalog());
 btnScanAgain.addEventListener("click", () => showScreen("scan"));
 btnBack.addEventListener("click", () => showScreen("scan"));
 
 btnManualSearch.addEventListener("click", async () => {
   try {
-    setStatus("Searching…");
-    resultsEl.innerHTML = "";
-    const items = await search(manualInput.value);
-    renderResults(items);
-    setStatus(`Found ${items.length}`);
+    await runSearch(manualInput.value);
   } catch (e) {
     setStatus("Search failed: " + getErrorMessage(e));
     alert("Search failed: " + getErrorMessage(e));
@@ -400,5 +642,6 @@ btnClear.addEventListener("click", () => {
 
 // Init
 setStatus("Idle");
+setCameraInfo(activeCameraSummary);
 showScreen("scan");
 renderCatalog();
