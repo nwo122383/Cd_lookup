@@ -81,6 +81,14 @@ video {
   background: black;
 }
 
+.camera-info {
+  margin-top: 8px;
+  min-height: 14px;
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
 .controls {
   margin-top: 10px;
   display: grid;
@@ -177,6 +185,12 @@ input {
   font-size: 11px;
   color: var(--muted);
   margin-top: 2px;
+}
+
+.result-meta {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--muted);
 }
 
 .catalog-head {
