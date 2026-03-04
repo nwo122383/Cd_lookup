@@ -22,7 +22,7 @@
 
       <main id="appScroll">
         <section class="hero">
-          <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden />
+          <input id="cameraInput" class="camera-input" type="file" accept="image/*" capture="environment" />
 
           <div class="status-card">
             <div class="status-row">
@@ -43,7 +43,7 @@
           </div>
 
           <div class="button-grid">
-            <button class="primary" id="btn-start" type="button">Capture</button>
+            <label class="primary input-trigger" id="btn-start" for="cameraInput">Capture</label>
             <button class="ghost" id="btn-stop" type="button" disabled>Clear</button>
             <button class="ghost" id="btn-flip" type="button">Flip Camera</button>
             <button class="ghost" id="btn-rescan" type="button">Try Again</button>
