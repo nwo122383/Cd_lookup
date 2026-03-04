@@ -9,11 +9,8 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <title>R1 Photo Scan 2A</title>
-
-    <!-- Keep your local ZXing Browser build -->
+    <title>R1 Photo Scan Test</title>
     <script src="./zxing-browser.min.js"></script>
-
     <style>
       :root {
         --bg: #111111;
@@ -23,8 +20,13 @@
         --muted: #b9ad9a;
         --accent: #f97316;
       }
-      * { box-sizing: border-box; }
-      html, body {
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
         margin: 0;
         width: 240px;
         height: 282px;
@@ -33,19 +35,25 @@
         color: var(--text);
         font-family: Arial, sans-serif;
       }
-      body { padding: 5px; }
+
+      body {
+        padding: 5px;
+      }
+
       .app {
         height: 100%;
         display: flex;
         flex-direction: column;
         gap: 4px;
       }
+
       .top {
         display: flex;
         justify-content: space-between;
         align-items: center;
         gap: 4px;
       }
+
       .build {
         padding: 3px 6px;
         border-radius: 999px;
@@ -54,18 +62,26 @@
         font-size: 9px;
         font-weight: 700;
       }
-      .card, .debug {
+
+      .card,
+      .debug {
         border: 1px solid var(--line);
         border-radius: 10px;
         background: var(--panel);
       }
-      .card { padding: 5px; }
+
+      .card {
+        padding: 5px;
+      }
+
       .status-value {
         font-size: 10px;
         font-weight: 700;
         word-break: break-word;
       }
-      video, img {
+
+      video,
+      img {
         width: 100%;
         height: 38px;
         border-radius: 8px;
@@ -73,12 +89,17 @@
         object-fit: cover;
         display: block;
       }
-      img { margin-top: 3px; }
+
+      img {
+        margin-top: 3px;
+      }
+
       .buttons {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 5px;
       }
+
       button {
         appearance: none;
         min-height: 24px;
@@ -90,11 +111,13 @@
         font-weight: 700;
         padding: 0 4px;
       }
+
       button.primary {
         background: var(--accent);
         border-color: #fdba74;
         color: #1a1209;
       }
+
       .scroll {
         flex: 1 1 auto;
         min-height: 0;
@@ -104,8 +127,13 @@
         padding-right: 2px;
         -webkit-overflow-scrolling: touch;
       }
+
       .scroll::-webkit-scrollbar,
-      .debug::-webkit-scrollbar { width: 0; height: 0; }
+      .debug::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+      }
+
       .debug {
         padding: 5px;
         font-size: 8px;
@@ -113,23 +141,24 @@
         white-space: pre-wrap;
         word-break: break-word;
         overflow: auto;
-        min-height: 52px;
+        min-height: 48px;
       }
+
       .barcode {
         font-size: 10px;
         font-weight: 700;
       }
+
       .small {
         font-size: 9px;
         color: var(--muted);
       }
     </style>
   </head>
-
   <body>
     <div class="app">
       <div class="top">
-        <div class="build" id="buildBadge"></div>
+        <div class="build">PHOTO-2026-03-04-O</div>
         <div class="status-value" id="status">Idle</div>
       </div>
 
@@ -153,9 +182,7 @@
         <div class="card">
           <div class="small" id="prefLabel">pref: environment</div>
           <div class="barcode" id="barcodeText">No barcode detected</div>
-          <div class="small" id="detailText">
-            Tip: back up until the barcode is SHARP (not blurry). Then take photo.
-          </div>
+          <div class="small" id="detailText">Open Main, then Take Photo, then Scan Photo (local ZXingBrowser).</div>
         </div>
 
         <div class="debug" id="debug">waiting...</div>
@@ -164,10 +191,6 @@
 
     <script>
       (function () {
-        // ====== VERSIONING (bump number + letter each deploy) ======
-        const BUILD = "PHOTO-SMART-2A"; // <- bump to 2B, 2C, etc.
-        window.__BUILD = BUILD;
-
         const statusEl = document.getElementById("status");
         const debugEl = document.getElementById("debug");
         const prefLabelEl = document.getElementById("prefLabel");
@@ -175,8 +198,6 @@
         const detailTextEl = document.getElementById("detailText");
         const videoEl = document.getElementById("video");
         const photoPreviewEl = document.getElementById("photoPreview");
-        const buildBadgeEl = document.getElementById("buildBadge");
-
         const openMainBtn = document.getElementById("openMainBtn");
         const openDefaultBtn = document.getElementById("openDefaultBtn");
         const takePhotoBtn = document.getElementById("takePhotoBtn");
@@ -184,41 +205,113 @@
         const flipBtn = document.getElementById("flipBtn");
         const stopBtn = document.getElementById("stopBtn");
 
-        buildBadgeEl.textContent = BUILD;
-
         const state = {
           preferredFacing: "environment",
           stream: null,
           photoBlob: null,
           photoUrl: "",
           reader: null,
-          scanBusy: false,
         };
+        const VIDEO_PROFILES = [
+          { label: "4k", width: 3840, height: 2160 },
+          { label: "1440p", width: 2560, height: 1440 },
+          { label: "1080p", width: 1920, height: 1080 },
+          { label: "720p", width: 1280, height: 720 },
+        ];
 
-        // Smaller = less crash risk on R1. Still enough detail for UPC/EAN when photo is sharp.
-        const PROCESS_MAX_DIM = 1024;
-
-        // Keep log small so it doesn't eat memory
-        function log(line) {
-          const stamp = new Date().toISOString().slice(11, 19);
-          const next = (stamp + " " + line + "\n" + debugEl.textContent);
-          debugEl.textContent = next.slice(0, 2200);
+        function setStatus(text) {
+          statusEl.textContent = text;
         }
 
-        function setStatus(t) { statusEl.textContent = t; }
-        function setDetail(t) { detailTextEl.textContent = t; }
+        function setDetail(text) {
+          detailTextEl.textContent = text;
+        }
 
-        function normalizeBarcode(value) {
-          return String(value || "").trim().replace(/[^\d]/g, "");
+        function log(line) {
+          const stamp = new Date().toISOString().slice(11, 19);
+          debugEl.textContent = (stamp + " " + line + "\n" + debugEl.textContent).trim();
         }
 
         function updatePref() {
           prefLabelEl.textContent = "pref: " + state.preferredFacing;
         }
 
+        function normalizeBarcode(value) {
+          return String(value || "").replace(/[^\d]/g, "");
+        }
+
+        function buildVideoAttempts(mode, preferredFacing) {
+          const frameRate = { ideal: 30, max: 30 };
+
+          if (mode === "default") {
+            return VIDEO_PROFILES.map(function (profile) {
+              return {
+                video: {
+                  width: { ideal: profile.width },
+                  height: { ideal: profile.height },
+                  frameRate: frameRate
+                },
+                audio: false
+              };
+            }).concat([{ video: true, audio: false }]);
+          }
+
+          const exactFacingAttempts = VIDEO_PROFILES.map(function (profile) {
+            return {
+              video: {
+                facingMode: { exact: preferredFacing },
+                width: { ideal: profile.width },
+                height: { ideal: profile.height },
+                frameRate: frameRate
+              },
+              audio: false
+            };
+          });
+
+          const idealFacingAttempts = VIDEO_PROFILES.map(function (profile) {
+            return {
+              video: {
+                facingMode: { ideal: preferredFacing },
+                width: { ideal: profile.width },
+                height: { ideal: profile.height },
+                frameRate: frameRate
+              },
+              audio: false
+            };
+          });
+
+          return exactFacingAttempts.concat(idealFacingAttempts, [{ video: true, audio: false }]);
+        }
+
+        async function getPhotoOptions(imageCapture) {
+          if (!imageCapture || !imageCapture.getPhotoCapabilities) {
+            return {};
+          }
+
+          try {
+            const caps = await imageCapture.getPhotoCapabilities();
+            const maxWidth = caps && caps.imageWidth ? caps.imageWidth.max : 0;
+            const maxHeight = caps && caps.imageHeight ? caps.imageHeight.max : 0;
+
+            if (maxWidth > 0 && maxHeight > 0) {
+              log("photo caps max=" + maxWidth + "x" + maxHeight);
+              return {
+                imageWidth: maxWidth,
+                imageHeight: maxHeight
+              };
+            }
+          } catch (error) {
+            log("photo caps failed: " + (error.message || error));
+          }
+
+          return {};
+        }
+
         function clearPhoto() {
           state.photoBlob = null;
-          if (state.photoUrl) URL.revokeObjectURL(state.photoUrl);
+          if (state.photoUrl) {
+            URL.revokeObjectURL(state.photoUrl);
+          }
           state.photoUrl = "";
           photoPreviewEl.removeAttribute("src");
         }
@@ -226,426 +319,203 @@
         function stopStream() {
           try {
             if (videoEl.srcObject && videoEl.srcObject.getTracks) {
-              videoEl.srcObject.getTracks().forEach((t) => t.stop());
+              videoEl.srcObject.getTracks().forEach(function (track) {
+                track.stop();
+              });
             }
-          } catch (e) { /* ignore */ }
+          } catch (error) {
+            log("stop video srcObject failed: " + (error.message || error));
+          }
 
           try {
             if (state.stream && state.stream.getTracks) {
-              state.stream.getTracks().forEach((t) => t.stop());
+              state.stream.getTracks().forEach(function (track) {
+                track.stop();
+              });
             }
-          } catch (e) { /* ignore */ }
+          } catch (error) {
+            log("stop stream failed: " + (error.message || error));
+          }
 
           videoEl.srcObject = null;
           state.stream = null;
-          log("stream stopped");
           setStatus("Stopped");
-        }
-
-        async function safeYield() {
-          // Yield to avoid long task watchdog / UI freeze on R1
-          await new Promise((r) => setTimeout(r, 0));
-        }
-
-        async function applyBestTrackConstraints(track) {
-          if (!track || !track.getCapabilities || !track.applyConstraints) return;
-          const caps = track.getCapabilities();
-          const adv = [];
-
-          if (caps.focusMode && Array.isArray(caps.focusMode) && caps.focusMode.includes("continuous")) {
-            adv.push({ focusMode: "continuous" });
-          }
-          if (caps.exposureMode && Array.isArray(caps.exposureMode) && caps.exposureMode.includes("continuous")) {
-            adv.push({ exposureMode: "continuous" });
-          }
-
-          // small zoom only (helps low-res sensors a bit)
-          if (caps.zoom && typeof caps.zoom === "object") {
-            const zMin = Number(caps.zoom.min || 1);
-            const zMax = Number(caps.zoom.max || 1);
-            const target = Math.max(zMin, Math.min(zMax, zMin * 1.5));
-            if (isFinite(target) && target > 1.01) adv.push({ zoom: target });
-          }
-
-          if (!adv.length) return;
-          try {
-            await track.applyConstraints({ advanced: adv });
-            log("applyConstraints ok: " + JSON.stringify(adv));
-          } catch (e) {
-            log("applyConstraints failed");
-          }
+          log("stream stopped");
         }
 
         async function openCamera(mode) {
           stopStream();
           clearPhoto();
-
           barcodeTextEl.textContent = "No barcode detected";
-          setDetail("Tip: back up until the barcode is SHARP (not blurry). Then take photo.");
+            setDetail("Open Main, then Take Photo, then Scan Photo (local ZXingBrowser).");
           setStatus("Opening camera...");
-          log("openCamera mode=" + mode + " pref=" + state.preferredFacing);
+          log("mode=" + mode + " pref=" + state.preferredFacing);
 
-          const attempts =
-            mode === "default"
-              ? [{ video: true, audio: false }]
-              : [
-                  {
-                    video: {
-                      facingMode: { ideal: state.preferredFacing },
-                      width: { ideal: 1280 },
-                      height: { ideal: 720 },
-                    },
-                    audio: false,
-                  },
-                  {
-                    video: {
-                      facingMode: { ideal: state.preferredFacing },
-                      width: { ideal: 640 },
-                      height: { ideal: 480 },
-                    },
-                    audio: false,
-                  },
-                  { video: true, audio: false },
-                ];
+          const attempts = buildVideoAttempts(mode, state.preferredFacing);
 
-          for (let i = 0; i < attempts.length; i += 1) {
+          let lastError = null;
+
+          for (let index = 0; index < attempts.length; index += 1) {
             try {
-              log("trying " + JSON.stringify(attempts[i]));
-              state.stream = await navigator.mediaDevices.getUserMedia(attempts[i]);
+              log("trying " + JSON.stringify(attempts[index]));
+              state.stream = await navigator.mediaDevices.getUserMedia(attempts[index]);
               videoEl.srcObject = state.stream;
               await videoEl.play();
-
               const track = state.stream.getVideoTracks()[0];
               const settings = track && track.getSettings ? track.getSettings() : {};
+              log("opened label=" + (track && track.label ? track.label : "unknown"));
               log("settings=" + JSON.stringify(settings));
-              await applyBestTrackConstraints(track);
-
+              log("preview size=" + videoEl.videoWidth + "x" + videoEl.videoHeight);
               setStatus("Camera opened");
               return;
-            } catch (e) {
-              log("failed: " + (e && e.name ? e.name : "Error"));
+            } catch (error) {
+              lastError = error;
+              log("failed: " + (error.name || "Error") + " " + (error.message || error));
             }
           }
 
           setStatus("Open failed");
-          setDetail("Could not open camera.");
+          log("all attempts failed: " + ((lastError && (lastError.message || lastError.name)) || "unknown"));
         }
 
         async function takePhoto() {
-          if (!state.stream) { setStatus("Open a camera first"); return; }
+          if (!state.stream) {
+            setStatus("Open a camera first");
+            return;
+          }
+
           const track = state.stream.getVideoTracks()[0];
-          if (!track) { setStatus("No video track"); return; }
+          if (!track) {
+            setStatus("No video track");
+            return;
+          }
+
           if (!("ImageCapture" in window)) {
             setStatus("ImageCapture unavailable");
-            setDetail("This runtime can't take full-res still photos.");
+            setDetail("Rabbit opened the camera, but ImageCapture is not available in this runtime.");
+            log("ImageCapture unavailable");
             return;
           }
 
           try {
             setStatus("Taking photo...");
             const imageCapture = new ImageCapture(track);
+            const photoOptions = await getPhotoOptions(imageCapture);
+            const hasPhotoOptions = Boolean(photoOptions.imageWidth && photoOptions.imageHeight);
+            let blob;
 
-            let photoSettings = undefined;
-            try {
-              if (imageCapture.getPhotoCapabilities) {
-                const caps = await imageCapture.getPhotoCapabilities();
-                const w = caps && caps.imageWidth ? caps.imageWidth.max : null;
-                const h = caps && caps.imageHeight ? caps.imageHeight.max : null;
-                if (w && h) {
-                  photoSettings = { imageWidth: w, imageHeight: h };
-                  log("takePhoto max settings=" + JSON.stringify(photoSettings));
-                }
+            if (hasPhotoOptions) {
+              try {
+                blob = await imageCapture.takePhoto(photoOptions);
+                log("takePhoto with max options");
+              } catch (error) {
+                log("takePhoto with options failed: " + (error.message || error));
+                blob = await imageCapture.takePhoto();
               }
-            } catch (e) {
-              log("getPhotoCapabilities failed");
+            } else {
+              blob = await imageCapture.takePhoto();
             }
-
-            const blob = await imageCapture.takePhoto(photoSettings);
 
             clearPhoto();
             state.photoBlob = blob;
             state.photoUrl = URL.createObjectURL(blob);
             photoPreviewEl.src = state.photoUrl;
 
+            try {
+              const photoImage = await loadPreviewImage();
+              log("photo dimensions=" + photoImage.naturalWidth + "x" + photoImage.naturalHeight);
+            } catch (error) {
+              log("photo dimensions unavailable: " + (error.message || error));
+            }
+
             setStatus("Photo captured");
-            setDetail("Now Scan Photo. If it fails: back up more so the barcode is sharp.");
+            setDetail("Photo captured. Press Scan Photo.");
             log("photo blob size=" + blob.size);
-          } catch (e) {
+            log("photo blob type=" + blob.type);
+          } catch (error) {
             setStatus("Take photo failed");
-            setDetail("takePhoto() failed.");
-            log("takePhoto failed");
+            setDetail("takePhoto() failed in this runtime.");
+            log("takePhoto failed: " + (error.message || error));
           }
         }
 
         async function loadPreviewImage() {
-          if (!state.photoUrl) throw new Error("No photo URL");
-          const img = new Image();
-          img.src = state.photoUrl;
-          await new Promise((resolve, reject) => {
-            img.onload = resolve;
-            img.onerror = reject;
+          if (!state.photoUrl) {
+            throw new Error("No photo URL available");
+          }
+
+          const image = new Image();
+          image.src = state.photoUrl;
+
+          await new Promise(function (resolve, reject) {
+            image.onload = resolve;
+            image.onerror = reject;
           });
-          return img;
-        }
 
-        function canvasFromImageScaled(img, maxDim) {
-          const iw = img.naturalWidth || img.width;
-          const ih = img.naturalHeight || img.height;
-          const scale = Math.min(1, maxDim / Math.max(iw, ih));
-          const w = Math.max(1, Math.round(iw * scale));
-          const h = Math.max(1, Math.round(ih * scale));
-          const c = document.createElement("canvas");
-          c.width = w;
-          c.height = h;
-          const ctx = c.getContext("2d", { willReadFrequently: true });
-          ctx.drawImage(img, 0, 0, w, h);
-          return c;
-        }
-
-        function rotateCanvas(src, angle) {
-          if (angle === 0) return src;
-          const rad = (angle * Math.PI) / 180;
-          const c = document.createElement("canvas");
-          c.width = (angle === 90 || angle === 270) ? src.height : src.width;
-          c.height = (angle === 90 || angle === 270) ? src.width : src.height;
-          const ctx = c.getContext("2d", { willReadFrequently: true });
-          ctx.translate(c.width / 2, c.height / 2);
-          ctx.rotate(rad);
-          ctx.drawImage(src, -src.width / 2, -src.height / 2);
-          return c;
-        }
-
-        function cropCanvas(src, rect) {
-          const c = document.createElement("canvas");
-          c.width = Math.max(1, rect.w);
-          c.height = Math.max(1, rect.h);
-          const ctx = c.getContext("2d", { willReadFrequently: true });
-          ctx.drawImage(src, rect.x, rect.y, rect.w, rect.h, 0, 0, c.width, c.height);
-          return c;
-        }
-
-        function clampCanvasDim(src, maxDim) {
-          const w = src.width, h = src.height;
-          const scale = Math.min(1, maxDim / Math.max(w, h));
-          if (scale >= 0.999) return src;
-          const c = document.createElement("canvas");
-          c.width = Math.max(1, Math.round(w * scale));
-          c.height = Math.max(1, Math.round(h * scale));
-          const ctx = c.getContext("2d", { willReadFrequently: true });
-          ctx.drawImage(src, 0, 0, c.width, c.height);
-          return c;
-        }
-
-        function grayscaleContrast(src, contrastBoost) {
-          const c = document.createElement("canvas");
-          c.width = src.width;
-          c.height = src.height;
-          const ctx = c.getContext("2d", { willReadFrequently: true });
-          ctx.drawImage(src, 0, 0);
-
-          const imgData = ctx.getImageData(0, 0, c.width, c.height);
-          const d = imgData.data;
-          const contrast = contrastBoost || 1.25;
-          const midpoint = 128;
-
-          for (let i = 0; i < d.length; i += 4) {
-            const r = d[i], g = d[i + 1], b = d[i + 2];
-            const gray = (r * 0.299 + g * 0.587 + b * 0.114) | 0;
-            const v = Math.max(0, Math.min(255, (gray - midpoint) * contrast + midpoint));
-            d[i] = d[i + 1] = d[i + 2] = v;
-          }
-
-          ctx.putImageData(imgData, 0, 0);
-          return c;
-        }
-
-        function simpleThreshold(src, invert) {
-          // lightweight threshold (no Otsu) to avoid big compute on R1
-          const c = document.createElement("canvas");
-          c.width = src.width;
-          c.height = src.height;
-          const ctx = c.getContext("2d", { willReadFrequently: true });
-          ctx.drawImage(src, 0, 0);
-
-          const imgData = ctx.getImageData(0, 0, c.width, c.height);
-          const d = imgData.data;
-
-          // fixed threshold near midpoint works surprisingly well after contrast
-          const T = 140;
-
-          for (let i = 0; i < d.length; i += 4) {
-            const v = d[i] > T ? 255 : 0;
-            const out = invert ? 255 - v : v;
-            d[i] = d[i + 1] = d[i + 2] = out;
-          }
-
-          ctx.putImageData(imgData, 0, 0);
-          return c;
-        }
-
-        async function decodeWithBarcodeDetector(source) {
-          if (!("BarcodeDetector" in window)) return "";
-          try {
-            // Some runtimes behave better when you specify common formats explicitly.
-            const detector = new BarcodeDetector({
-              formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "qr_code"],
-            });
-            const codes = await detector.detect(source);
-            if (codes && codes.length) {
-              return codes[0].rawValue || codes[0].value || "";
-            }
-          } catch (e) { /* ignore */ }
-          return "";
-        }
-
-        async function decodeWithZXingCanvas(sourceCanvas) {
-          if (typeof ZXingBrowser === "undefined" || !ZXingBrowser.BrowserMultiFormatReader) return "";
-          try {
-            if (!state.reader) state.reader = new ZXingBrowser.BrowserMultiFormatReader();
-
-            // Prefer decodeFromCanvas if your build supports it (much less memory than toDataURL)
-            if (typeof state.reader.decodeFromCanvas === "function") {
-              const result = await state.reader.decodeFromCanvas(sourceCanvas);
-              return (result && result.getText && result.getText()) || "";
-            }
-
-            // Fallback: smaller JPEG dataURL to reduce memory
-            const jpeg = sourceCanvas.toDataURL("image/jpeg", 0.75);
-            const result = await state.reader.decodeFromImageUrl(jpeg);
-            return (result && result.getText && result.getText()) || "";
-          } catch (e) {
-            return "";
-          }
-        }
-
-        function buildCropRects(w, h) {
-          // Keep this SHORT to reduce work/crash risk.
-          // Barcode on CD cases is usually in bottom third.
-          const rects = [];
-
-          // Bottom third (primary)
-          rects.push({ x: w * 0.08, y: h * 0.62, w: w * 0.84, h: h * 0.34 });
-
-          // Bottom strip tighter (secondary)
-          rects.push({ x: w * 0.12, y: h * 0.70, w: w * 0.76, h: h * 0.24 });
-
-          // Center-ish fallback
-          rects.push({ x: w * 0.12, y: h * 0.22, w: w * 0.76, h: h * 0.56 });
-
-          return rects.map((r) => ({
-            x: Math.max(0, Math.round(r.x)),
-            y: Math.max(0, Math.round(r.y)),
-            w: Math.max(1, Math.round(r.w)),
-            h: Math.max(1, Math.round(r.h)),
-          }));
-        }
-
-        async function smartDecode(imgEl) {
-          // Scale once to keep memory sane
-          const base = canvasFromImageScaled(imgEl, PROCESS_MAX_DIM);
-
-          // Quick try on base
-          let v = normalizeBarcode(await decodeWithBarcodeDetector(base));
-          if (v) return v;
-          v = normalizeBarcode(await decodeWithZXingCanvas(base));
-          if (v) return v;
-
-          const rotations = [0, 90, 270];
-
-          for (let ri = 0; ri < rotations.length; ri += 1) {
-            const rotated = rotateCanvas(base, rotations[ri]);
-            const rects = buildCropRects(rotated.width, rotated.height);
-
-            for (let i = 0; i < rects.length; i += 1) {
-              await safeYield(); // prevent watchdog
-
-              // Crop and clamp so we never get huge getImageData allocations
-              let crop = cropCanvas(rotated, rects[i]);
-              crop = clampCanvasDim(crop, 720);
-
-              // raw
-              v = normalizeBarcode(await decodeWithBarcodeDetector(crop));
-              if (v) return v;
-              v = normalizeBarcode(await decodeWithZXingCanvas(crop));
-              if (v) return v;
-
-              // preprocess only on small crops
-              const pixels = crop.width * crop.height;
-              if (pixels <= 720 * 720) {
-                const gray = grayscaleContrast(crop, 1.35);
-
-                v = normalizeBarcode(await decodeWithBarcodeDetector(gray));
-                if (v) return v;
-                v = normalizeBarcode(await decodeWithZXingCanvas(gray));
-                if (v) return v;
-
-                const thr = simpleThreshold(gray, false);
-                v = normalizeBarcode(await decodeWithBarcodeDetector(thr));
-                if (v) return v;
-                v = normalizeBarcode(await decodeWithZXingCanvas(thr));
-                if (v) return v;
-
-                const inv = simpleThreshold(gray, true);
-                v = normalizeBarcode(await decodeWithBarcodeDetector(inv));
-                if (v) return v;
-                v = normalizeBarcode(await decodeWithZXingCanvas(inv));
-                if (v) return v;
-              }
-            }
-          }
-
-          return "";
+          return image;
         }
 
         async function scanPhoto() {
-          if (state.scanBusy) return;
           if (!state.photoBlob || !state.photoUrl) {
             setStatus("Take a photo first");
             return;
           }
 
-          state.scanBusy = true;
-          scanPhotoBtn.disabled = true;
-          setStatus("Scanning...");
-          setDetail("Light scan (R1-safe): bottom crops + rotate + simple threshold.");
+          setStatus("Scanning photo...");
+          setDetail("Trying ZXing only.");
 
           try {
             const image = await loadPreviewImage();
+            let detected = "";
 
-            // Always yield once before heavy work (helps R1)
-            await safeYield();
+            if (typeof ZXingBrowser !== "undefined" && ZXingBrowser.BrowserMultiFormatReader) {
+              try {
+                if (!state.reader) {
+                  state.reader = new ZXingBrowser.BrowserMultiFormatReader();
+                }
+                const result = await state.reader.decodeFromImageElement(image);
+                detected = result && result.getText ? result.getText() : "";
+                if (detected) {
+                  log("ZXing found " + detected);
+                }
+              } catch (error) {
+                log("ZXing scan failed: " + (error.message || error));
+              }
+            } else {
+              log("ZXing unavailable");
+            }
 
-            const detected = await smartDecode(image);
+            detected = normalizeBarcode(detected);
             if (!detected) {
               setStatus("No barcode found");
-              setDetail("Most common cause: BLUR. Back up until bars are sharp, retake photo.");
+              setDetail("No barcode was found in the still photo.");
               barcodeTextEl.textContent = "No barcode detected";
-              log("smartDecode: none");
-            } else {
-              barcodeTextEl.textContent = "Barcode " + detected;
-              setStatus("Barcode found");
-              setDetail("Decoded. If it was hard: retake from farther away so it’s sharp.");
-              log("detected " + detected);
+              return;
             }
-          } catch (e) {
-            setStatus("Scan crashed");
-            setDetail("Scan hit a runtime/memory limit. Try retaking from farther away (sharper), then scan.");
-            log("scan error: " + (e && e.message ? e.message : "unknown"));
-          } finally {
-            state.scanBusy = false;
-            scanPhotoBtn.disabled = false;
+
+            barcodeTextEl.textContent = "Barcode " + detected;
+            setStatus("Barcode found");
+            setDetail("Still-photo decode worked.");
+            log("detected barcode " + detected);
+          } catch (error) {
+            setStatus("Scan photo failed");
+            setDetail("Still-photo decode failed.");
+            log("scanPhoto failed: " + (error.message || error));
           }
         }
 
         openMainBtn.addEventListener("click", function () {
           openCamera("preferred");
         });
+
         openDefaultBtn.addEventListener("click", function () {
           openCamera("default");
         });
+
         takePhotoBtn.addEventListener("click", function () {
           takePhoto();
         });
+
         scanPhotoBtn.addEventListener("click", function () {
           scanPhoto();
         });
@@ -654,7 +524,7 @@
           state.preferredFacing = state.preferredFacing === "environment" ? "user" : "environment";
           updatePref();
           setStatus("Preference: " + state.preferredFacing);
-          log("pref -> " + state.preferredFacing);
+          log("preference changed to " + state.preferredFacing);
         });
 
         stopBtn.addEventListener("click", function () {
@@ -662,7 +532,6 @@
           clearPhoto();
         });
 
-        // R1 physical interactions
         window.addEventListener("sideClick", function () {
           takePhoto();
         });
@@ -671,14 +540,18 @@
           state.preferredFacing = state.preferredFacing === "environment" ? "user" : "environment";
           updatePref();
           setStatus("Preference: " + state.preferredFacing);
-          log("longPress pref -> " + state.preferredFacing);
+          log("long press changed preference to " + state.preferredFacing);
         });
 
         updatePref();
-        log("build " + BUILD);
-        log("BarcodeDetector=" + Boolean(window.BarcodeDetector));
+        log("build PHOTO-2026-03-04-O");
+        log("PluginMessageHandler=" + (typeof window.PluginMessageHandler !== "undefined"));
+        log("creationStorage=" + Boolean(window.creationStorage && window.creationStorage.plain));
+        log("mediaDevices=" + Boolean(navigator.mediaDevices));
+        log("getUserMedia=" + Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia));
         log("ImageCapture=" + Boolean(window.ImageCapture));
-        log("ZXingBrowser=" + Boolean(window.ZXingBrowser));
+        log("BarcodeDetector=" + Boolean(window.BarcodeDetector));
+        log("scan mode=ZXingBrowser only");
         setStatus("Ready");
       })();
     </script>
