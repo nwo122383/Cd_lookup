@@ -26,6 +26,7 @@ const state = {
   selectedReleaseId: "",
   library: [],
   busy: false,
+  permissionPrimed: false,
 };
 
 const el = {
@@ -458,6 +459,8 @@ function renderAll() {
 }
 
 async function readVideoDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) return [];
+
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     return devices.filter((device) => device.kind === "videoinput");
@@ -468,8 +471,9 @@ async function readVideoDevices() {
 
 function buildCameraAttempts(mode, preferredDeviceId) {
   const base = {
-    width: { ideal: 1280 },
-    height: { ideal: 720 },
+    width: { ideal: 640 },
+    height: { ideal: 480 },
+    frameRate: { ideal: 24, max: 30 },
   };
 
   return [
@@ -500,8 +504,8 @@ function pickPreferredDevice(devices, mode) {
 }
 
 async function openCameraStream(mode = state.cameraMode) {
-  const devices = await readVideoDevices();
-  const preferredDevice = pickPreferredDevice(devices, mode);
+  const devices = state.permissionPrimed ? await readVideoDevices() : [];
+  const preferredDevice = state.permissionPrimed ? pickPreferredDevice(devices, mode) : null;
   const attempts = buildCameraAttempts(mode, preferredDevice?.deviceId || "");
   let lastError = null;
 
@@ -524,6 +528,24 @@ async function openCameraStream(mode = state.cameraMode) {
   }
 
   throw lastError || new Error("Unable to open the camera");
+}
+
+async function primeCameraPermission() {
+  if (state.permissionPrimed) return;
+
+  let tempStream = null;
+
+  try {
+    tempStream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: false,
+    });
+    state.permissionPrimed = true;
+  } catch (error) {
+    throw new Error(`Camera permission failed: ${getErrorMessage(error)}`);
+  } finally {
+    stopMediaStream(tempStream);
+  }
 }
 
 async function stopScan() {
@@ -558,16 +580,19 @@ async function startScan() {
   setStatus("Opening camera", `Trying ${state.cameraMode} mode first.`);
 
   try {
+    await primeCameraPermission();
     state.stream = await openCameraStream(state.cameraMode);
     el.video.srcObject = state.stream;
     await el.video.play().catch(() => {});
 
-    if ("BarcodeDetector" in window) {
+    if (typeof ZXing !== "undefined" && ZXing?.BrowserMultiFormatReader) {
+      setStatus("Scanning barcode", "ZXing fallback active.");
+      await scanWithZXing();
+    } else if ("BarcodeDetector" in window) {
       setStatus("Scanning barcode", "BarcodeDetector active.");
       await scanWithBarcodeDetector();
     } else {
-      setStatus("Scanning barcode", "ZXing fallback active.");
-      await scanWithZXing();
+      throw new Error("No barcode scanner is available in this runtime");
     }
   } catch (error) {
     state.scanning = false;
@@ -577,6 +602,10 @@ async function startScan() {
 }
 
 async function scanWithBarcodeDetector() {
+  if (!("BarcodeDetector" in window)) {
+    throw new Error("BarcodeDetector is unavailable");
+  }
+
   let detector;
 
   try {
@@ -585,27 +614,21 @@ async function scanWithBarcodeDetector() {
     detector = new BarcodeDetector();
   }
 
-  const track = state.stream?.getVideoTracks?.()[0];
-  const imageCapture = track && "ImageCapture" in window ? new ImageCapture(track) : null;
-
   async function tick() {
     if (!state.scanning) return;
 
     try {
-      let codes = [];
-
-      if (imageCapture?.grabFrame) {
-        const bitmap = await imageCapture.grabFrame();
-        codes = await detector.detect(bitmap);
-      } else {
-        const canvas = document.createElement("canvas");
-        canvas.width = el.video.videoWidth || 640;
-        canvas.height = el.video.videoHeight || 480;
-        const context = canvas.getContext("2d");
-        context.drawImage(el.video, 0, 0, canvas.width, canvas.height);
-        const bitmap = await createImageBitmap(canvas);
-        codes = await detector.detect(bitmap);
+      const canvas = document.createElement("canvas");
+      canvas.width = el.video.videoWidth || 640;
+      canvas.height = el.video.videoHeight || 480;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        throw new Error("Canvas context unavailable");
       }
+
+      context.drawImage(el.video, 0, 0, canvas.width, canvas.height);
+      const bitmap = await createImageBitmap(canvas);
+      const codes = await detector.detect(bitmap);
 
       if (codes.length) {
         const firstValue = codes[0].rawValue || codes[0].value || "";
@@ -625,9 +648,11 @@ async function scanWithZXing() {
     state.zxingReader = new ZXing.BrowserMultiFormatReader();
   }
 
-  state.zxingReader.decodeFromVideoElementContinuously(el.video, async (result) => {
+  state.zxingReader.decodeFromVideoElementContinuously(el.video, (result) => {
     if (!state.scanning || !result) return;
-    await onBarcodeDetected(result.getText());
+    onBarcodeDetected(result.getText()).catch((error) => {
+      setStatus("Scan callback failed", getErrorMessage(error));
+    });
   });
 }
 
