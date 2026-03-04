@@ -1,4 +1,4 @@
-<!doctype html>
+\<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -50,7 +50,7 @@
       .app {
         height: 100%;
         display: grid;
-        grid-template-rows: auto auto auto auto auto 1fr;
+        grid-template-rows: auto auto auto 1fr;
         gap: 6px;
       }
 
@@ -109,7 +109,7 @@
       video,
       canvas {
         width: 100%;
-        height: 82px;
+        height: 72px;
         border-radius: 8px;
         background: #000;
         object-fit: cover;
@@ -117,25 +117,26 @@
       }
 
       canvas {
-        height: 56px;
-        margin-top: 6px;
+        height: 44px;
+        margin-top: 4px;
       }
 
       .buttons {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 6px;
+        gap: 5px;
       }
 
       button {
         appearance: none;
-        min-height: 32px;
+        min-height: 28px;
         border: 1px solid var(--line);
         border-radius: 9px;
         background: #2a2a2a;
         color: var(--text);
-        font-size: 11px;
+        font-size: 10px;
         font-weight: 700;
+        padding: 0 4px;
       }
 
       button.primary {
@@ -151,20 +152,20 @@
       .split {
         display: grid;
         grid-template-columns: 1fr auto;
-        gap: 6px;
+        gap: 5px;
         align-items: center;
       }
 
       input {
         width: 100%;
         min-width: 0;
-        min-height: 30px;
-        padding: 6px 8px;
+        min-height: 26px;
+        padding: 4px 6px;
         border-radius: 8px;
         border: 1px solid var(--line);
         background: #141414;
         color: var(--text);
-        font-size: 11px;
+        font-size: 10px;
       }
 
       .barcode {
@@ -210,8 +211,24 @@
         overflow: auto;
       }
 
+      .scroll {
+        min-height: 0;
+        overflow-y: auto;
+        display: grid;
+        gap: 6px;
+        padding-right: 2px;
+      }
+
+      .scroll::-webkit-scrollbar,
+      .choices::-webkit-scrollbar,
+      .library::-webkit-scrollbar,
+      .debug::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+      }
+
       .choices {
-        max-height: 68px;
+        max-height: 56px;
         display: grid;
         gap: 5px;
       }
@@ -237,7 +254,7 @@
       }
 
       .library {
-        max-height: 76px;
+        max-height: 60px;
         display: grid;
         gap: 5px;
       }
@@ -252,6 +269,10 @@
         white-space: pre-wrap;
         word-break: break-word;
       }
+
+      .compact-card {
+        padding: 6px;
+      }
     </style>
   </head>
   <body>
@@ -261,7 +282,7 @@
           <h1>R1 CD Scan</h1>
           <div class="small">Main camera path + frame capture</div>
         </div>
-        <div class="build">SCAN-2026-03-04-G</div>
+        <div class="build">SCAN-2026-03-04-H</div>
       </div>
 
       <div class="card">
@@ -274,37 +295,41 @@
         <canvas id="captureCanvas" width="240" height="120"></canvas>
       </div>
 
-      <div class="buttons">
-        <button class="primary" id="openBtn" type="button">Open Main</button>
-        <button id="defaultBtn" type="button">Open Default</button>
-        <button class="primary" id="captureBtn" type="button">Capture Scan</button>
-        <button id="flipBtn" type="button">Flip Pref</button>
-        <button id="lookupBtn" type="button">Lookup</button>
-        <button id="addBtn" type="button" disabled>Add CD</button>
-        <button id="stopBtn" type="button">Stop</button>
-        <button id="clearBtn" type="button">Clear Lib</button>
-      </div>
-
-      <div class="card">
-        <div class="split">
-          <input id="barcodeInput" inputmode="numeric" placeholder="Barcode" />
-          <div class="small" id="cameraPref">pref: environment</div>
+      <div class="scroll">
+        <div class="card compact-card">
+          <div class="buttons">
+            <button class="primary" id="openBtn" type="button">Open Main</button>
+            <button id="defaultBtn" type="button">Open Default</button>
+            <button class="primary" id="captureBtn" type="button">Capture</button>
+            <button id="flipBtn" type="button">Flip Pref</button>
+            <button id="lookupBtn" type="button">Lookup</button>
+            <button id="addBtn" type="button" disabled>Add CD</button>
+            <button id="stopBtn" type="button">Stop</button>
+            <button id="clearBtn" type="button">Clear Lib</button>
+          </div>
         </div>
-        <div class="barcode" id="barcodeText">No barcode yet</div>
-        <div class="banner idle" id="banner">Open the main camera, point it at a CD barcode, then press Capture Scan.</div>
-        <div class="result-title" id="resultTitle">No release selected</div>
-        <div class="result-sub" id="resultSub">MusicBrainz lookup will appear here.</div>
-        <div class="result-meta" id="resultMeta">Library count: 0</div>
-      </div>
 
-      <div class="card">
-        <div class="small">Matches</div>
-        <div class="choices" id="choices"></div>
-        <div class="small" style="margin-top: 6px;">Library</div>
-        <div class="library" id="library"></div>
-      </div>
+        <div class="card compact-card">
+          <div class="split">
+            <input id="barcodeInput" inputmode="numeric" placeholder="Barcode" />
+            <div class="small" id="cameraPref">pref: environment</div>
+          </div>
+          <div class="barcode" id="barcodeText">No barcode yet</div>
+          <div class="banner idle" id="banner">Open the main camera, point it at a CD barcode, then press Capture.</div>
+          <div class="result-title" id="resultTitle">No release selected</div>
+          <div class="result-sub" id="resultSub">MusicBrainz lookup will appear here.</div>
+          <div class="result-meta" id="resultMeta">Library count: 0</div>
+        </div>
 
-      <div class="debug" id="debug">waiting...</div>
+        <div class="card compact-card">
+          <div class="small">Matches</div>
+          <div class="choices" id="choices"></div>
+          <div class="small" style="margin-top: 6px;">Library</div>
+          <div class="library" id="library"></div>
+        </div>
+
+        <div class="debug" id="debug">waiting...</div>
+      </div>
     </div>
 
     <script>
@@ -870,7 +895,7 @@
           renderChoices();
           renderLibrary();
           renderResult();
-          log("build SCAN-2026-03-04-G");
+          log("build SCAN-2026-03-04-H");
           log("PluginMessageHandler=" + (typeof window.PluginMessageHandler !== "undefined"));
           log("creationStorage=" + Boolean(window.creationStorage && window.creationStorage.plain));
           log("mediaDevices=" + Boolean(navigator.mediaDevices));
