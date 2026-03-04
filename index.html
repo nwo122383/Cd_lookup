@@ -6,8 +6,11 @@
       name="viewport"
       content="width=240, height=282, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>CD Shelf</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260304e" />
     <script src="https://unpkg.com/@zxing/browser@latest"></script>
   </head>
   <body>
@@ -17,13 +20,14 @@
           <div class="eyebrow">Rabbit r1 creation</div>
           <h1>CD Shelf</h1>
         </div>
-        <div class="runtime-pill" id="runtimeLabel">Loading runtime</div>
+        <div class="topbar-pills">
+          <div class="build-pill" id="buildLabel">v2026.03.04e</div>
+          <div class="runtime-pill" id="runtimeLabel">Loading runtime</div>
+        </div>
       </header>
 
       <main id="appScroll">
         <section class="hero">
-          <input id="cameraInput" class="camera-input" type="file" accept="image/*" capture="environment" />
-
           <div class="status-card">
             <div class="status-row">
               <span class="status-label">Status</span>
@@ -42,15 +46,20 @@
             <div class="camera-label" id="cameraLabel">Camera idle</div>
           </div>
 
+          <div class="native-input-wrap">
+            <div class="native-input-label">Native camera input</div>
+            <input id="cameraInput" class="native-camera-input" type="file" accept="image/*" capture="environment" />
+          </div>
+
           <div class="button-grid">
-            <label class="primary input-trigger" id="btn-start" for="cameraInput">Capture</label>
+            <button class="primary" id="btn-start" type="button">Open Picker</button>
             <button class="ghost" id="btn-stop" type="button" disabled>Clear</button>
             <button class="ghost" id="btn-flip" type="button">Flip Camera</button>
             <button class="ghost" id="btn-rescan" type="button">Try Again</button>
           </div>
 
           <div class="tip">
-            Capture opens the camera/photo picker. Side button starts capture or adds the selected CD. Long press flips capture preference. Scroll wheel moves through the library.
+            Build version is shown at top right. Try the native camera input first. Side button can still attempt picker open, but direct tap is more reliable on restricted webviews.
           </div>
         </section>
 
@@ -119,6 +128,6 @@
       </main>
     </div>
 
-    <script src="./app.js"></script>
+    <script src="./app.js?v=20260304e"></script>
   </body>
 </html>
