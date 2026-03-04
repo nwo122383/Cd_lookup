@@ -33,6 +33,8 @@ const el = {
   status: document.getElementById("status"),
   statusDetail: document.getElementById("statusDetail"),
   video: document.getElementById("video"),
+  previewImage: document.getElementById("previewImage"),
+  cameraInput: document.getElementById("cameraInput"),
   scroll: document.getElementById("appScroll"),
   cameraLabel: document.getElementById("cameraLabel"),
   runtimeLabel: document.getElementById("runtimeLabel"),
@@ -208,6 +210,10 @@ function stopMediaStream(stream) {
       stream.getTracks().forEach((track) => track.stop());
     }
   } catch {}
+}
+
+function setPreviewSource(src = "") {
+  el.previewImage.src = src;
 }
 
 function mapArtistCredit(artistCredit) {
@@ -550,58 +556,30 @@ async function primeCameraPermission() {
 
 async function stopScan() {
   state.scanning = false;
-
-  if (state.rafId) {
-    cancelAnimationFrame(state.rafId);
-    state.rafId = null;
-  }
-
-  try {
-    state.zxingReader?.reset();
-  } catch {}
-
-  stopMediaStream(el.video.srcObject);
-  el.video.srcObject = null;
-  stopMediaStream(state.stream);
-  state.stream = null;
+  state.busy = false;
+  setPreviewSource("");
+  el.cameraInput.value = "";
   el.btnStop.disabled = true;
+  setStatus("Capture cleared", "Ready for another barcode photo.");
 }
 
 async function startScan() {
-  if (state.scanning || state.busy) return;
+  if (state.busy) return;
 
-  if (!navigator.mediaDevices?.getUserMedia) {
-    setStatus("Camera API unavailable", "Rabbit creations use standard web camera APIs. This browser does not expose them.");
+  if (!el.cameraInput) {
+    setStatus("Camera input unavailable", "This runtime does not expose image capture.");
     return;
   }
 
   state.scanning = true;
+  state.busy = true;
   el.btnStop.disabled = false;
-  setStatus("Opening camera", `Trying ${state.cameraMode} mode first.`);
-
-  try {
-    await primeCameraPermission();
-    state.stream = await openCameraStream(state.cameraMode);
-    el.video.srcObject = state.stream;
-    await el.video.play().catch(() => {});
-
-    if (typeof ZXing !== "undefined" && ZXing?.BrowserMultiFormatReader) {
-      setStatus("Scanning barcode", "ZXing fallback active.");
-      await scanWithZXing();
-    } else if ("BarcodeDetector" in window) {
-      setStatus("Scanning barcode", "BarcodeDetector active.");
-      await scanWithBarcodeDetector();
-    } else {
-      throw new Error("No barcode scanner is available in this runtime");
-    }
-  } catch (error) {
-    state.scanning = false;
-    el.btnStop.disabled = true;
-    setStatus("Scan failed", getErrorMessage(error));
-  }
+  el.cameraInput.setAttribute("capture", state.cameraMode);
+  setStatus("Opening capture", `Requesting ${state.cameraMode} capture.`);
+  el.cameraInput.click();
 }
 
-async function scanWithBarcodeDetector() {
+async function scanWithBarcodeDetector(imageSource) {
   if (!("BarcodeDetector" in window)) {
     throw new Error("BarcodeDetector is unavailable");
   }
@@ -614,46 +592,21 @@ async function scanWithBarcodeDetector() {
     detector = new BarcodeDetector();
   }
 
-  async function tick() {
-    if (!state.scanning) return;
-
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = el.video.videoWidth || 640;
-      canvas.height = el.video.videoHeight || 480;
-      const context = canvas.getContext("2d");
-      if (!context) {
-        throw new Error("Canvas context unavailable");
-      }
-
-      context.drawImage(el.video, 0, 0, canvas.width, canvas.height);
-      const bitmap = await createImageBitmap(canvas);
-      const codes = await detector.detect(bitmap);
-
-      if (codes.length) {
-        const firstValue = codes[0].rawValue || codes[0].value || "";
-        await onBarcodeDetected(firstValue);
-        return;
-      }
-    } catch {}
-
-    state.rafId = requestAnimationFrame(tick);
+  const codes = await detector.detect(imageSource);
+  if (codes.length) {
+    return codes[0].rawValue || codes[0].value || "";
   }
 
-  state.rafId = requestAnimationFrame(tick);
+  return "";
 }
 
-async function scanWithZXing() {
+async function scanWithZXing(imageElement) {
   if (!state.zxingReader) {
     state.zxingReader = new ZXing.BrowserMultiFormatReader();
   }
 
-  state.zxingReader.decodeFromVideoElementContinuously(el.video, (result) => {
-    if (!state.scanning || !result) return;
-    onBarcodeDetected(result.getText()).catch((error) => {
-      setStatus("Scan callback failed", getErrorMessage(error));
-    });
-  });
+  const result = await state.zxingReader.decodeFromImageElement(imageElement);
+  return result?.getText?.() || "";
 }
 
 async function onBarcodeDetected(value) {
@@ -664,6 +617,70 @@ async function onBarcodeDetected(value) {
   el.manualBarcode.value = barcode;
   await stopScan();
   await lookupBarcode(barcode);
+}
+
+function readFileAsObjectUrl(file) {
+  return URL.createObjectURL(file);
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Unable to load captured image"));
+    image.src = src;
+  });
+}
+
+async function decodeBarcodeFromImage(imageElement) {
+  if ("BarcodeDetector" in window) {
+    try {
+      const detected = await scanWithBarcodeDetector(imageElement);
+      if (detected) return detected;
+    } catch {}
+  }
+
+  if (typeof ZXing !== "undefined" && ZXing?.BrowserMultiFormatReader) {
+    try {
+      const detected = await scanWithZXing(imageElement);
+      if (detected) return detected;
+    } catch {}
+  }
+
+  return "";
+}
+
+async function handleCapturedFile(file) {
+  if (!file) {
+    state.scanning = false;
+    state.busy = false;
+    setStatus("Capture cancelled", "No image was selected.");
+    return;
+  }
+
+  const objectUrl = readFileAsObjectUrl(file);
+
+  try {
+    setPreviewSource(objectUrl);
+    setStatus("Reading barcode", "Decoding the captured image.");
+    const image = await loadImageElement(objectUrl);
+    const decoded = await decodeBarcodeFromImage(image);
+
+    if (!decoded) {
+      state.scanning = false;
+      state.busy = false;
+      setStatus("No barcode found", "Try better lighting or a closer photo.");
+      return;
+    }
+
+    await onBarcodeDetected(decoded);
+  } catch (error) {
+    state.scanning = false;
+    state.busy = false;
+    setStatus("Capture failed", getErrorMessage(error));
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 async function lookupBarcode(rawValue) {
@@ -772,17 +789,11 @@ async function clearLibrary() {
 async function flipCamera() {
   state.cameraMode = state.cameraMode === "environment" ? "user" : "environment";
   const detail = state.cameraMode === "environment"
-    ? "Trying rear-facing constraints."
-    : "Trying front-facing constraints.";
+    ? "Capture will request the outward camera."
+    : "Capture will request the inward camera.";
 
   setStatus("Camera mode changed", detail);
-
-  if (state.scanning) {
-    await stopScan();
-    await startScan();
-  } else {
-    setCameraLabel(`Camera preference: ${state.cameraMode}`);
-  }
+  setCameraLabel(`Capture preference: ${state.cameraMode}`);
 }
 
 function handleScrollWheel(direction) {
@@ -797,10 +808,8 @@ function isEditableTarget(target) {
 
 function attachHardwareEvents() {
   window.addEventListener("sideClick", () => {
-    if (state.scanning) {
-      stopScan().then(() => {
-        setStatus("Scan stopped", "Side button pressed.");
-      });
+    if (state.busy) {
+      stopScan().catch(() => {});
       return;
     }
 
@@ -830,9 +839,7 @@ function attachHardwareEvents() {
 function bindEvents() {
   el.btnStart.addEventListener("click", () => startScan());
   el.btnStop.addEventListener("click", () => {
-    stopScan().then(() => {
-      setStatus("Scan stopped", "Camera released.");
-    });
+    stopScan().catch(() => {});
   });
   el.btnFlip.addEventListener("click", () => flipCamera());
   el.btnRescan.addEventListener("click", () => {
@@ -856,13 +863,17 @@ function bindEvents() {
       lookupBarcode(el.manualBarcode.value);
     }
   });
+  el.cameraInput.addEventListener("change", () => {
+    handleCapturedFile(el.cameraInput.files?.[0] || null);
+  });
 }
 
 async function init() {
   state.library = await storage.loadLibrary();
   el.runtimeLabel.textContent = getRuntimeLabel();
-  setCameraLabel(`Camera preference: ${state.cameraMode}`);
-  setStatus("Ready", "Scan a CD barcode. Side button starts scanning; long-press flips camera.");
+  setPreviewSource("");
+  setCameraLabel(`Capture preference: ${state.cameraMode}`);
+  setStatus("Ready", "Capture a barcode photo. Side button starts capture; long-press flips camera.");
   renderAll();
   bindEvents();
   attachHardwareEvents();
