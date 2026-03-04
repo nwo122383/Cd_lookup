@@ -161,11 +161,16 @@ h1 {
   border: 1px solid rgba(36, 23, 15, 0.18);
 }
 
-video {
+video,
+#previewImage {
   width: 100%;
   height: 100%;
   object-fit: cover;
   background: #000;
+}
+
+#previewImage {
+  display: block;
 }
 
 .camera-row {
