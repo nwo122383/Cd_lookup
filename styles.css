@@ -60,6 +60,12 @@ input,
   padding: 10px 10px 8px;
 }
 
+.topbar-pills {
+  display: grid;
+  gap: 5px;
+  justify-items: end;
+}
+
 .eyebrow,
 .section-kicker {
   font-size: 9px;
@@ -81,7 +87,8 @@ h1 {
 }
 
 .runtime-pill,
-.count-pill {
+.count-pill,
+.build-pill {
   align-self: center;
   border-radius: 999px;
   padding: 5px 8px;
@@ -90,6 +97,11 @@ h1 {
   color: var(--muted);
   font-size: 9px;
   text-align: center;
+}
+
+.build-pill {
+  background: rgba(184, 87, 45, 0.16);
+  color: #8a4429;
 }
 
 #appScroll {
@@ -189,7 +201,7 @@ video,
   margin-top: 8px;
 }
 
-button {
+button,
 .input-trigger {
   appearance: none;
   border: 1px solid var(--line);
@@ -234,12 +246,27 @@ button:disabled {
   opacity: 0.52;
 }
 
-.camera-input {
-  position: absolute;
-  left: -9999px;
-  width: 1px;
-  height: 1px;
-  opacity: 0.001;
+.native-input-wrap {
+  margin-top: 8px;
+}
+
+.native-input-label {
+  margin-bottom: 4px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.native-camera-input {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border-radius: 12px;
+  border: 1px dashed rgba(36, 23, 15, 0.25);
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--ink);
+  font-size: 10px;
 }
 
 .manual-row {
