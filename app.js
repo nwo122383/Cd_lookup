@@ -564,16 +564,11 @@ async function stopScan() {
 }
 
 async function startScan(triggerPicker = false) {
-  if (state.busy) return;
-
   if (!el.cameraInput) {
     setStatus("Camera input unavailable", "This runtime does not expose image capture.");
     return;
   }
 
-  state.scanning = true;
-  state.busy = true;
-  el.btnStop.disabled = false;
   el.cameraInput.setAttribute("capture", state.cameraMode);
   setStatus("Opening capture", `Requesting ${state.cameraMode} capture.`);
 
@@ -661,6 +656,9 @@ async function handleCapturedFile(file) {
     return;
   }
 
+  state.scanning = true;
+  state.busy = true;
+  el.btnStop.disabled = false;
   const objectUrl = readFileAsObjectUrl(file);
 
   try {
@@ -840,7 +838,7 @@ function attachHardwareEvents() {
 }
 
 function bindEvents() {
-  el.btnStart.addEventListener("click", () => startScan(false));
+  el.btnStart.addEventListener("click", () => startScan(true));
   el.btnStop.addEventListener("click", () => {
     stopScan().catch(() => {});
   });
@@ -868,6 +866,10 @@ function bindEvents() {
   });
   el.cameraInput.addEventListener("change", () => {
     handleCapturedFile(el.cameraInput.files?.[0] || null);
+  });
+  el.cameraInput.addEventListener("click", () => {
+    el.cameraInput.setAttribute("capture", state.cameraMode);
+    setStatus("Opening capture", `Requesting ${state.cameraMode} capture.`);
   });
 }
 
