@@ -158,7 +158,7 @@
   <body>
     <div class="app">
       <div class="top">
-        <div class="build">PHOTO-2026-03-04-L</div>
+        <div class="build">PHOTO-2026-03-04-M</div>
         <div class="status-value" id="status">Idle</div>
       </div>
 
@@ -182,7 +182,7 @@
         <div class="card">
           <div class="small" id="prefLabel">pref: environment</div>
           <div class="barcode" id="barcodeText">No barcode detected</div>
-          <div class="small" id="detailText">Open Main, then Take Photo, then Scan Photo.</div>
+          <div class="small" id="detailText">Open Main, then Take Photo, then Scan Photo (ZXing only).</div>
         </div>
 
         <div class="debug" id="debug">waiting...</div>
@@ -211,7 +211,6 @@
           photoBlob: null,
           photoUrl: "",
           reader: null,
-          detector: null,
         };
 
         function setStatus(text) {
@@ -275,7 +274,7 @@
           stopStream();
           clearPhoto();
           barcodeTextEl.textContent = "No barcode detected";
-          setDetail("Open Main, then Take Photo, then Scan Photo.");
+            setDetail("Open Main, then Take Photo, then Scan Photo (ZXing only).");
           setStatus("Opening camera...");
           log("mode=" + mode + " pref=" + state.preferredFacing);
 
@@ -363,21 +362,6 @@
           }
         }
 
-        function getDetector() {
-          if (!("BarcodeDetector" in window)) return null;
-          if (!state.detector) {
-            try {
-              state.detector = new BarcodeDetector({
-                formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "itf"]
-              });
-            } catch (error) {
-              log("detector init failed: " + (error.message || error));
-              state.detector = null;
-            }
-          }
-          return state.detector;
-        }
-
         async function loadPreviewImage() {
           if (!state.photoUrl) {
             throw new Error("No photo URL available");
@@ -401,28 +385,13 @@
           }
 
           setStatus("Scanning photo...");
-          setDetail("Trying BarcodeDetector, then ZXing.");
+          setDetail("Trying ZXing only.");
 
           try {
             const image = await loadPreviewImage();
             let detected = "";
 
-            const detector = getDetector();
-            if (detector) {
-              try {
-                const codes = await detector.detect(image);
-                if (codes && codes.length) {
-                  detected = codes[0].rawValue || codes[0].value || "";
-                  log("BarcodeDetector found " + detected);
-                }
-              } catch (error) {
-                log("BarcodeDetector scan failed: " + (error.message || error));
-              }
-            } else {
-              log("BarcodeDetector unavailable");
-            }
-
-            if (!detected && typeof ZXing !== "undefined" && ZXing.BrowserMultiFormatReader) {
+            if (typeof ZXing !== "undefined" && ZXing.BrowserMultiFormatReader) {
               try {
                 if (!state.reader) {
                   state.reader = new ZXing.BrowserMultiFormatReader();
@@ -435,7 +404,7 @@
               } catch (error) {
                 log("ZXing scan failed: " + (error.message || error));
               }
-            } else if (!detected) {
+            } else {
               log("ZXing unavailable");
             }
 
@@ -498,13 +467,14 @@
         });
 
         updatePref();
-        log("build PHOTO-2026-03-04-L");
+        log("build PHOTO-2026-03-04-M");
         log("PluginMessageHandler=" + (typeof window.PluginMessageHandler !== "undefined"));
         log("creationStorage=" + Boolean(window.creationStorage && window.creationStorage.plain));
         log("mediaDevices=" + Boolean(navigator.mediaDevices));
         log("getUserMedia=" + Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia));
         log("ImageCapture=" + Boolean(window.ImageCapture));
         log("BarcodeDetector=" + Boolean(window.BarcodeDetector));
+        log("scan mode=ZXing only");
         setStatus("Ready");
       })();
     </script>
