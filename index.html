@@ -270,6 +270,28 @@
           log("stream stopped");
         }
 
+        async function tryApplyEnhancementConstraints(track) {
+          if (!track || !track.applyConstraints) return;
+
+          // Best-effort. Many runtimes ignore or reject these.
+          const candidates = [
+            { advanced: [{ focusMode: "continuous" }] },
+            { advanced: [{ exposureMode: "continuous" }] },
+            { advanced: [{ whiteBalanceMode: "continuous" }] },
+            { advanced: [{ focusMode: "continuous" }, { exposureMode: "continuous" }] },
+          ];
+
+          for (let i = 0; i < candidates.length; i += 1) {
+            try {
+              await track.applyConstraints(candidates[i]);
+              log("applied constraints " + JSON.stringify(candidates[i]));
+              return;
+            } catch (error) {
+              // Ignore.
+            }
+          }
+        }
+
         async function openCamera(mode) {
           stopStream();
           clearPhoto();
@@ -278,22 +300,32 @@
           setStatus("Opening camera...");
           log("mode=" + mode + " pref=" + state.preferredFacing);
 
+          // Barcode scanning benefits massively from resolution + sharp focus.
+          // 640x480 is often too small for UPC/EAN bars on a CD case.
           const attempts = mode === "default"
             ? [{ video: true, audio: false }]
             : [
                 {
                   video: {
                     facingMode: { exact: state.preferredFacing },
-                    width: { ideal: 640 },
-                    height: { ideal: 480 }
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
                   },
                   audio: false
                 },
                 {
                   video: {
                     facingMode: { ideal: state.preferredFacing },
-                    width: { ideal: 640 },
-                    height: { ideal: 480 }
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
+                  },
+                  audio: false
+                },
+                {
+                  video: {
+                    facingMode: { ideal: state.preferredFacing },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
                   },
                   audio: false
                 },
@@ -312,6 +344,7 @@
               const settings = track && track.getSettings ? track.getSettings() : {};
               log("opened label=" + (track && track.label ? track.label : "unknown"));
               log("settings=" + JSON.stringify(settings));
+              await tryApplyEnhancementConstraints(track);
               setStatus("Camera opened");
               return;
             } catch (error) {
@@ -346,7 +379,60 @@
           try {
             setStatus("Taking photo...");
             const imageCapture = new ImageCapture(track);
-            const blob = await imageCapture.takePhoto();
+
+            // Request the max supported capture resolution when possible.
+            let photoSettings = null;
+            try {
+              if (imageCapture.getPhotoCapabilities) {
+                const caps = await imageCapture.getPhotoCapabilities();
+                if (caps && caps.imageWidth && caps.imageHeight) {
+                  photoSettings = {
+                    imageWidth: caps.imageWidth.max,
+                    imageHeight: caps.imageHeight.max,
+                  };
+                  log(
+                    "photoCaps=" +
+                      JSON.stringify({
+                        w: caps.imageWidth,
+                        h: caps.imageHeight,
+                      })
+                  );
+                  log("photoSettings=" + JSON.stringify(photoSettings));
+                }
+              }
+            } catch (error) {
+              log("getPhotoCapabilities failed: " + (error.message || error));
+            }
+
+            let blob = null;
+            try {
+              blob = await imageCapture.takePhoto(photoSettings || undefined);
+            } catch (error) {
+              // Some runtimes reject takePhoto settings. Fallback to grabFrame.
+              log("takePhoto() failed, trying grabFrame(): " + (error.message || error));
+              if (imageCapture.grabFrame) {
+                const frame = await imageCapture.grabFrame();
+                const canvas = document.createElement("canvas");
+                canvas.width = frame.width;
+                canvas.height = frame.height;
+                const ctx = canvas.getContext("2d");
+                ctx.drawImage(frame, 0, 0);
+                blob = await new Promise(function (resolve) {
+                  canvas.toBlob(
+                    function (result) {
+                      resolve(result);
+                    },
+                    "image/jpeg",
+                    0.95
+                  );
+                });
+              }
+            }
+
+            if (!blob) {
+              throw new Error("Unable to capture photo blob");
+            }
+
             clearPhoto();
             state.photoBlob = blob;
             state.photoUrl = URL.createObjectURL(blob);
@@ -360,6 +446,272 @@
             setDetail("takePhoto() failed in this runtime.");
             log("takePhoto failed: " + (error.message || error));
           }
+        }
+
+        function clampByte(value) {
+          return value < 0 ? 0 : value > 255 ? 255 : value;
+        }
+
+        function grayscaleAndBoostContrast(imageData, contrast) {
+          const data = imageData.data;
+          const hist = new Array(256);
+          for (let i = 0; i < 256; i += 1) hist[i] = 0;
+
+          // Convert to grayscale + contrast, while building histogram.
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            let v = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+            v = clampByte(Math.round((v - 128) * contrast + 128));
+            data[i] = v;
+            data[i + 1] = v;
+            data[i + 2] = v;
+            data[i + 3] = 255;
+            hist[v] += 1;
+          }
+
+          return hist;
+        }
+
+        function otsuThreshold(hist, total) {
+          let sum = 0;
+          for (let i = 0; i < 256; i += 1) sum += i * hist[i];
+
+          let sumB = 0;
+          let wB = 0;
+          let wF = 0;
+          let varMax = 0;
+          let threshold = 128;
+
+          for (let t = 0; t < 256; t += 1) {
+            wB += hist[t];
+            if (wB === 0) continue;
+            wF = total - wB;
+            if (wF === 0) break;
+
+            sumB += t * hist[t];
+            const mB = sumB / wB;
+            const mF = (sum - sumB) / wF;
+            const between = wB * wF * (mB - mF) * (mB - mF);
+
+            if (between > varMax) {
+              varMax = between;
+              threshold = t;
+            }
+          }
+
+          return threshold;
+        }
+
+        function thresholdToBinarized(imageData, threshold, invert) {
+          const data = imageData.data;
+          for (let i = 0; i < data.length; i += 4) {
+            const v = data[i];
+            const on = v > threshold ? 255 : 0;
+            const out = invert ? 255 - on : on;
+            data[i] = out;
+            data[i + 1] = out;
+            data[i + 2] = out;
+            data[i + 3] = 255;
+          }
+        }
+
+        function makeCanvas(width, height) {
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(width));
+          canvas.height = Math.max(1, Math.round(height));
+          return canvas;
+        }
+
+        function drawCropToCanvas(image, crop) {
+          const iw = image.naturalWidth || image.width;
+          const ih = image.naturalHeight || image.height;
+          const sx = Math.max(0, Math.round(crop.sx));
+          const sy = Math.max(0, Math.round(crop.sy));
+          const sw = Math.max(1, Math.round(crop.sw));
+          const sh = Math.max(1, Math.round(crop.sh));
+
+          // Keep enough pixels for decoding, but avoid huge canvases.
+          const maxDim = 1600;
+          const scale = Math.min(1, maxDim / Math.max(sw, sh));
+          const dw = Math.max(1, Math.round(sw * scale));
+          const dh = Math.max(1, Math.round(sh * scale));
+
+          const canvas = makeCanvas(dw, dh);
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          ctx.drawImage(image, sx, sy, sw, sh, 0, 0, dw, dh);
+          return canvas;
+        }
+
+        function rotateCanvas90(srcCanvas) {
+          const dst = makeCanvas(srcCanvas.height, srcCanvas.width);
+          const ctx = dst.getContext("2d");
+          ctx.translate(dst.width / 2, dst.height / 2);
+          ctx.rotate(Math.PI / 2);
+          ctx.drawImage(srcCanvas, -srcCanvas.width / 2, -srcCanvas.height / 2);
+          return dst;
+        }
+
+        function buildCandidateCanvases(image) {
+          const iw = image.naturalWidth || image.width;
+          const ih = image.naturalHeight || image.height;
+          const crops = [
+            { name: "full", sx: 0, sy: 0, sw: iw, sh: ih },
+            // Center-ish
+            { name: "center", sx: iw * 0.1, sy: ih * 0.2, sw: iw * 0.8, sh: ih * 0.6 },
+            // Many CD barcodes sit near the bottom back cover
+            { name: "bottom", sx: iw * 0.05, sy: ih * 0.55, sw: iw * 0.9, sh: ih * 0.45 },
+            { name: "bottom-tight", sx: iw * 0.1, sy: ih * 0.65, sw: iw * 0.8, sh: ih * 0.35 },
+          ];
+
+          const candidates = [];
+          for (let i = 0; i < crops.length; i += 1) {
+            const base = drawCropToCanvas(image, crops[i]);
+            candidates.push({ name: crops[i].name + "-raw", canvas: base });
+
+            // Sideways photo fallback.
+            const rot = rotateCanvas90(base);
+            candidates.push({ name: crops[i].name + "-rot90", canvas: rot });
+          }
+
+          return candidates;
+        }
+
+        function buildProcessedVariants(candidate) {
+          const variants = [];
+          variants.push(candidate);
+
+          // Grayscale + contrast boost
+          try {
+            const c1 = makeCanvas(candidate.canvas.width, candidate.canvas.height);
+            const ctx1 = c1.getContext("2d", { willReadFrequently: true });
+            ctx1.drawImage(candidate.canvas, 0, 0);
+            const img1 = ctx1.getImageData(0, 0, c1.width, c1.height);
+            const hist = grayscaleAndBoostContrast(img1, 1.6);
+            ctx1.putImageData(img1, 0, 0);
+            variants.push({ name: candidate.name + "-gray", canvas: c1, _hist: hist });
+
+            // Otsu threshold (normal + inverted)
+            const total = c1.width * c1.height;
+            const thr = otsuThreshold(hist, total);
+
+            const c2 = makeCanvas(c1.width, c1.height);
+            const ctx2 = c2.getContext("2d", { willReadFrequently: true });
+            ctx2.drawImage(c1, 0, 0);
+            const img2 = ctx2.getImageData(0, 0, c2.width, c2.height);
+            thresholdToBinarized(img2, thr, false);
+            ctx2.putImageData(img2, 0, 0);
+            variants.push({ name: candidate.name + "-thresh", canvas: c2 });
+
+            const c3 = makeCanvas(c1.width, c1.height);
+            const ctx3 = c3.getContext("2d", { willReadFrequently: true });
+            ctx3.drawImage(c1, 0, 0);
+            const img3 = ctx3.getImageData(0, 0, c3.width, c3.height);
+            thresholdToBinarized(img3, thr, true);
+            ctx3.putImageData(img3, 0, 0);
+            variants.push({ name: candidate.name + "-threshInv", canvas: c3 });
+          } catch (error) {
+            // Ignore processing errors.
+          }
+
+          return variants;
+        }
+
+        function getDetector() {
+          if (!("BarcodeDetector" in window)) return null;
+          try {
+            return new BarcodeDetector({
+              formats: ["ean_13", "upc_a", "upc_e", "ean_8", "code_128"],
+            });
+          } catch (error) {
+            try {
+              return new BarcodeDetector();
+            } catch {
+              return null;
+            }
+          }
+        }
+
+        function getReader() {
+          if (state.reader) return state.reader;
+          if (typeof ZXingBrowser === "undefined" || !ZXingBrowser.BrowserMultiFormatReader) return null;
+
+          // Best-effort try-harder hints.
+          try {
+            const hints = new Map();
+            if (ZXingBrowser.DecodeHintType && ZXingBrowser.BarcodeFormat) {
+              hints.set(ZXingBrowser.DecodeHintType.TRY_HARDER, true);
+              hints.set(ZXingBrowser.DecodeHintType.POSSIBLE_FORMATS, [
+                ZXingBrowser.BarcodeFormat.EAN_13,
+                ZXingBrowser.BarcodeFormat.UPC_A,
+                ZXingBrowser.BarcodeFormat.UPC_E,
+                ZXingBrowser.BarcodeFormat.EAN_8,
+                ZXingBrowser.BarcodeFormat.CODE_128,
+              ]);
+              state.reader = new ZXingBrowser.BrowserMultiFormatReader(hints);
+              return state.reader;
+            }
+          } catch (error) {
+            // Ignore.
+          }
+
+          state.reader = new ZXingBrowser.BrowserMultiFormatReader();
+          return state.reader;
+        }
+
+        async function tryDecodeWithDetector(detector, source) {
+          if (!detector) return "";
+          try {
+            const codes = await detector.detect(source);
+            if (codes && codes.length) {
+              return codes[0].rawValue || codes[0].value || "";
+            }
+          } catch (error) {
+            // Ignore.
+          }
+          return "";
+        }
+
+        async function tryDecodeWithZXing(reader, sourceCanvas) {
+          if (!reader) return "";
+          try {
+            const result = await reader.decodeFromCanvas(sourceCanvas);
+            return result && result.getText ? result.getText() : "";
+          } catch (error) {
+            return "";
+          }
+        }
+
+        async function deepDecodeBarcodeFromImage(image) {
+          const detector = getDetector();
+          const reader = getReader();
+
+          log("image=" + (image.naturalWidth || image.width) + "x" + (image.naturalHeight || image.height));
+          log("BarcodeDetector=" + Boolean(detector));
+          log("ZXingReader=" + Boolean(reader));
+
+          // Quick pass: raw image element.
+          const quick = await tryDecodeWithDetector(detector, image);
+          if (quick) return quick;
+
+          // Deep pass: multiple crops/rotations + preprocessing variants.
+          const bases = buildCandidateCanvases(image);
+          for (let i = 0; i < bases.length; i += 1) {
+            const variants = buildProcessedVariants(bases[i]);
+            for (let j = 0; j < variants.length; j += 1) {
+              const v = variants[j];
+              log("try " + v.name + " " + v.canvas.width + "x" + v.canvas.height);
+
+              const d = await tryDecodeWithDetector(detector, v.canvas);
+              if (d) return d;
+
+              const z = await tryDecodeWithZXing(reader, v.canvas);
+              if (z) return z;
+            }
+          }
+
+          return "";
         }
 
         async function loadPreviewImage() {
@@ -385,33 +737,19 @@
           }
 
           setStatus("Scanning photo...");
-          setDetail("Trying ZXing only.");
+          setDetail(
+            "Deep scan: max-res photo + crops + contrast/threshold (BarcodeDetector + ZXing). Tip: if close-ups are blurry, back up so the barcode is sharp."
+          );
 
           try {
             const image = await loadPreviewImage();
-            let detected = "";
-
-            if (typeof ZXingBrowser !== "undefined" && ZXingBrowser.BrowserMultiFormatReader) {
-              try {
-                if (!state.reader) {
-                  state.reader = new ZXingBrowser.BrowserMultiFormatReader();
-                }
-                const result = await state.reader.decodeFromImageElement(image);
-                detected = result && result.getText ? result.getText() : "";
-                if (detected) {
-                  log("ZXing found " + detected);
-                }
-              } catch (error) {
-                log("ZXing scan failed: " + (error.message || error));
-              }
-            } else {
-              log("ZXing unavailable");
-            }
-
+            let detected = await deepDecodeBarcodeFromImage(image);
             detected = normalizeBarcode(detected);
             if (!detected) {
               setStatus("No barcode found");
-              setDetail("No barcode was found in the still photo.");
+              setDetail(
+                "No barcode found. Tips: avoid glare, use brighter light, keep the case flat, and try holding the R1 a bit farther away so the barcode is in focus."
+              );
               barcodeTextEl.textContent = "No barcode detected";
               return;
             }
