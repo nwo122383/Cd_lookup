@@ -563,7 +563,7 @@ async function stopScan() {
   setStatus("Capture cleared", "Ready for another barcode photo.");
 }
 
-async function startScan() {
+async function startScan(triggerPicker = false) {
   if (state.busy) return;
 
   if (!el.cameraInput) {
@@ -576,7 +576,10 @@ async function startScan() {
   el.btnStop.disabled = false;
   el.cameraInput.setAttribute("capture", state.cameraMode);
   setStatus("Opening capture", `Requesting ${state.cameraMode} capture.`);
-  el.cameraInput.click();
+
+  if (triggerPicker) {
+    el.cameraInput.click();
+  }
 }
 
 async function scanWithBarcodeDetector(imageSource) {
@@ -818,7 +821,7 @@ function attachHardwareEvents() {
       return;
     }
 
-    startScan();
+    startScan(true);
   });
 
   window.addEventListener("longPressStart", () => {
@@ -837,7 +840,7 @@ function attachHardwareEvents() {
 }
 
 function bindEvents() {
-  el.btnStart.addEventListener("click", () => startScan());
+  el.btnStart.addEventListener("click", () => startScan(false));
   el.btnStop.addEventListener("click", () => {
     stopScan().catch(() => {});
   });
@@ -848,7 +851,7 @@ function bindEvents() {
     state.lastBarcode = "";
     renderSelectedRelease();
     renderReleaseChoices();
-    startScan();
+    setStatus("Ready", "Tap Capture to try another barcode photo.");
   });
   el.btnLookup.addEventListener("click", () => lookupBarcode(el.manualBarcode.value));
   el.btnAdd.addEventListener("click", () => addSelectedToLibrary());
