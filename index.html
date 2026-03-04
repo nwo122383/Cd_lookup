@@ -1,4 +1,4 @@
-\<!doctype html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -37,43 +37,29 @@
       }
 
       body {
-        padding: 8px;
+        padding: 5px;
       }
 
       .app {
         height: 100%;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 4px;
       }
 
       .top {
         display: flex;
         justify-content: space-between;
-        align-items: flex-start;
-        gap: 6px;
-      }
-
-      h1,
-      p {
-        margin: 0;
-      }
-
-      h1 {
-        font-size: 16px;
-      }
-
-      .small {
-        font-size: 10px;
-        color: var(--muted);
+        align-items: center;
+        gap: 4px;
       }
 
       .build {
-        padding: 4px 7px;
+        padding: 3px 6px;
         border-radius: 999px;
         background: rgba(249, 115, 22, 0.16);
         color: #ffb37a;
-        font-size: 10px;
+        font-size: 9px;
         font-weight: 700;
       }
 
@@ -85,17 +71,11 @@
       }
 
       .card {
-        padding: 7px;
-      }
-
-      .status-label {
-        color: var(--muted);
-        font-size: 10px;
+        padding: 5px;
       }
 
       .status-value {
-        margin-top: 4px;
-        font-size: 12px;
+        font-size: 10px;
         font-weight: 700;
         word-break: break-word;
       }
@@ -103,7 +83,7 @@
       video,
       img {
         width: 100%;
-        height: 58px;
+        height: 38px;
         border-radius: 8px;
         background: #000;
         object-fit: cover;
@@ -111,7 +91,7 @@
       }
 
       img {
-        margin-top: 4px;
+        margin-top: 3px;
       }
 
       .buttons {
@@ -122,12 +102,12 @@
 
       button {
         appearance: none;
-        min-height: 28px;
+        min-height: 24px;
         border: 1px solid var(--line);
         border-radius: 9px;
         background: #2a2a2a;
         color: var(--text);
-        font-size: 10px;
+        font-size: 9px;
         font-weight: 700;
         padding: 0 4px;
       }
@@ -143,8 +123,9 @@
         min-height: 0;
         overflow-y: auto;
         display: grid;
-        gap: 6px;
+        gap: 4px;
         padding-right: 2px;
+        -webkit-overflow-scrolling: touch;
       }
 
       .scroll::-webkit-scrollbar,
@@ -154,32 +135,30 @@
       }
 
       .debug {
-        padding: 6px;
-        font-size: 9px;
+        padding: 5px;
+        font-size: 8px;
         line-height: 1.25;
         white-space: pre-wrap;
         word-break: break-word;
         overflow: auto;
+        min-height: 48px;
       }
 
       .barcode {
-        font-size: 12px;
+        font-size: 10px;
         font-weight: 700;
+      }
+
+      .small {
+        font-size: 9px;
+        color: var(--muted);
       }
     </style>
   </head>
   <body>
     <div class="app">
       <div class="top">
-        <div>
-          <h1>R1 Photo Scan</h1>
-          <div class="small">Still photo from working camera stream</div>
-        </div>
-        <div class="build">PHOTO-2026-03-04-K</div>
-      </div>
-
-      <div class="card">
-        <div class="status-label">Status</div>
+        <div class="build">PHOTO-2026-03-04-L</div>
         <div class="status-value" id="status">Idle</div>
       </div>
 
@@ -519,7 +498,7 @@
         });
 
         updatePref();
-        log("build PHOTO-2026-03-04-K");
+        log("build PHOTO-2026-03-04-L");
         log("PluginMessageHandler=" + (typeof window.PluginMessageHandler !== "undefined"));
         log("creationStorage=" + Boolean(window.creationStorage && window.creationStorage.plain));
         log("mediaDevices=" + Boolean(navigator.mediaDevices));
